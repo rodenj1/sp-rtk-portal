@@ -90,6 +90,11 @@ class FakeAuthentik:
         self.users[email.lower()] = user
         return user
 
+    def change_email(self, user: FakeUser, email: str) -> None:
+        self.users.pop(user.email.lower(), None)
+        user.email = email
+        self.users[email.lower()] = user
+
     def script_challenge(self, challenge: dict[str, Any]) -> None:
         self._scripted.append(challenge)
 

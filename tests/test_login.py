@@ -165,9 +165,7 @@ async def test_email_is_re_read_from_authentik_on_every_login(
     async with portal.browser() as browser:
         await browser.sign_in(EMAIL, PASSWORD)
 
-    authentik.users.pop(EMAIL)
-    user.email = "renamed@example.com"
-    authentik.users[user.email] = user
+    authentik.change_email(user, "renamed@example.com")
     async with portal.browser() as browser:
         await browser.sign_in("renamed@example.com", PASSWORD)
         page = await browser.get("/")
