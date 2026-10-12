@@ -6,6 +6,8 @@ the cookie with a fresh 30-day ``Max-Age`` on the way out.
 
 from __future__ import annotations
 
+from urllib.parse import quote, urlsplit
+
 from fastapi import Depends, Request
 from starlette.datastructures import MutableHeaders
 from starlette.responses import Response
@@ -16,6 +18,33 @@ from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.context import PortalContext, portal_context
 
 _RENEW = "portal.renew_session"
+
+
+RETURN_AFTER_SIGN_IN = ("/claim",)
+"""Pages that send a signed-out visitor back to themselves after login (a
+link the base's local Portal page opened, carrying the pairing code)."""
+
+
+def login_url(request: Request) -> str:
+    """Where a signed-out GET goes: ``/login``, with ``next`` for the pages
+    in :data:`RETURN_AFTER_SIGN_IN`."""
+    path = request.url.path
+    if path not in RETURN_AFTER_SIGN_IN:
+        return "/login"
+    target = path + (f"?{request.url.query}" if request.url.query else "")
+    return "/login?next=" + quote(target, safe="/?=")
+
+
+def safe_next(target: str) -> str:
+    """``target`` if it's a path on this Portal, else ``/``."""
+    if (
+        target.startswith("/")
+        and not target.startswith(("//", "/\\"))
+        and "\\" not in target
+        and urlsplit(target).netloc == ""
+    ):
+        return target
+    return "/"
 
 
 class SignInRequired(Exception):

@@ -21,6 +21,7 @@ from sp_rtk_portal.accounts.authentik import (
     NeedsTotp,
     Outcome,
 )
+from sp_rtk_portal.accounts.deps import safe_next
 from sp_rtk_portal.accounts.events import PasswordChanged
 from sp_rtk_portal.accounts.store import upsert_on_login
 from sp_rtk_portal.context import PortalContext, portal_context
@@ -40,15 +41,25 @@ TIMED_OUT = "Sign-in timed out. Please start again."
 class PasswordStep(BaseModel):
     email: str
     password: str
+    next: str = ""
 
 
 class TotpStep(BaseModel):
     code: str
+    next: str = ""
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request, verified: str = "") -> HTMLResponse:
-    return render(request, "login.html", title="Sign in", verified=verified == "1")
+async def login_page(
+    request: Request, verified: str = "", next: str = ""
+) -> HTMLResponse:
+    return render(
+        request,
+        "login.html",
+        title="Sign in",
+        verified=verified == "1",
+        next_url=safe_next(next) if next else "",
+    )
 
 
 @router.post("/login")
@@ -60,7 +71,7 @@ async def login(
         attempt, outcome = await ctx.authentik.sign_in(step.email, step.password, ip)
     except AuthentikFailedClosed as e:
         return failed_closed(e)
-    return await _respond(request, ctx, attempt, outcome, WRONG_CREDENTIALS)
+    return await _respond(request, ctx, attempt, outcome, WRONG_CREDENTIALS, step.next)
 
 
 @router.post("/login/totp")
@@ -76,7 +87,7 @@ async def login_totp(
     except AuthentikFailedClosed as e:
         ctx.login_attempts.drop(key)
         return failed_closed(e)
-    return await _respond(request, ctx, attempt, outcome, WRONG_CODE)
+    return await _respond(request, ctx, attempt, outcome, WRONG_CODE, step.next)
 
 
 @router.post("/logout")
@@ -97,9 +108,12 @@ async def _respond(
     attempt: FlowAttempt,
     outcome: Outcome,
     wrong: str,
+    next_url: str = "",
 ) -> JSONResponse:
     if isinstance(outcome, Identity):
-        response = await signed_in(request, ctx, outcome)
+        response = await signed_in(
+            request, ctx, outcome, next_url=safe_next(next_url or "/")
+        )
         ctx.login_attempts.drop(request.cookies.get(attempts.COOKIE))
         response.delete_cookie(attempts.COOKIE, path="/", secure=True, httponly=True)
         return response

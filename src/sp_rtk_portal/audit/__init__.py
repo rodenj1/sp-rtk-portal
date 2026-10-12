@@ -18,6 +18,7 @@ PASSWORD_CHANGE = "password_change"
 PASSWORD_RECOVERY = "password_recovery"
 TOTP_ENABLED = "totp_enabled"
 TOTP_DISABLED = "totp_disabled"
+CLAIM = "claim"
 
 
 async def record(

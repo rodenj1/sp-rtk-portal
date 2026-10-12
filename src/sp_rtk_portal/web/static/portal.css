@@ -17,3 +17,9 @@ button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
 .links { font-size: .9rem; }
 .qr svg { width: 12rem; height: 12rem; background: #fff; padding: .5rem; }
 .secret { word-break: break-all; }
+.bases { list-style: none; padding: 0; display: grid; gap: .5rem; }
+.bases li { display: flex; flex-wrap: wrap; gap: .25rem 1rem; padding: .5rem .75rem; border: 1px solid #8884; border-radius: .375rem; }
+.bases .name { font-weight: 600; }
+.bases .state, .bases .version { color: #888; }
+.pending { display: grid; grid-template-columns: max-content 1fr; gap: .25rem 1rem; }
+.pending dd { margin: 0; }

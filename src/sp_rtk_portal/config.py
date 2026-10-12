@@ -26,6 +26,11 @@ class Settings:
     oidc_app_slug: str = "sp-rtk-portal"
     session_lifetime: timedelta = timedelta(days=30)
     login_attempt_lifetime: timedelta = timedelta(minutes=10)
+    # Claim (RFC 8628): how long a pairing code lives, how often the agent may
+    # poll for the result, and how many bases one account may Claim.
+    claim_lifetime: timedelta = timedelta(minutes=10)
+    claim_poll_interval: int = 5
+    max_bases_per_account: int = 25
 
     @property
     def oidc_issuer(self) -> str:
@@ -59,4 +64,9 @@ class Settings:
             **opt("totp_setup_flow_slug"),
             **opt("password_change_flow_slug"),
             **opt("oidc_app_slug"),
+            **{
+                name: int(env[f"PORTAL_{name.upper()}"])
+                for name in ("max_bases_per_account",)
+                if f"PORTAL_{name.upper()}" in env
+            },
         )

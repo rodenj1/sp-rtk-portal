@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block account %}{% include "_nav.html" %}{% endblock %}
+{% block main %}
+<h1>Claim a base</h1>
+<p>Enter the code shown on the base's Portal page (in its local web UI), name the base and approve.
+Only approve a code you got from your own base.</p>
+{% if problem %}<p class="error" role="alert">{{ problem }}</p>{% endif %}
+{% if pending %}
+<dl class="pending">
+  <dt>Base</dt><dd>{{ pending.suggested_name or "(no name)" }} (sp-rtk-base {{ pending.software_version or "unknown version" }})</dd>
+  <dt>Requested</dt><dd>{{ pending.requested_at | utc("%H:%M") }} UTC{% if pending.ip %} from {{ pending.ip }}{% endif %}</dd>
+</dl>
+{% endif %}
+<form data-action="/claim" data-step="approve">
+  <label>Code <input name="code" value="{{ code }}" autocomplete="off" autocapitalize="characters" spellcheck="false" required></label>
+  <label>Name <input name="name" value="{{ pending.suggested_name if pending else '' }}" maxlength="64" required></label>
+  <button type="submit">Approve</button>
+</form>
+<p class="error" data-error role="alert" hidden></p>
+{% endblock %}

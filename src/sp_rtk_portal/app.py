@@ -8,14 +8,21 @@ from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
+from sp_rtk_portal_protocol import ReplayCache
 
 from sp_rtk_portal import health
 from sp_rtk_portal.accounts import account_page_routes, signup_routes
 from sp_rtk_portal.accounts import routes as account_routes
 from sp_rtk_portal.accounts.attempts import PendingAttempts
 from sp_rtk_portal.accounts.authentik import Authentik
-from sp_rtk_portal.accounts.deps import SessionRenewalMiddleware, SignInRequired
+from sp_rtk_portal.accounts.deps import (
+    SessionRenewalMiddleware,
+    SignInRequired,
+    login_url,
+)
 from sp_rtk_portal.accounts.events import AccountEvents
+from sp_rtk_portal.agent_api import routes as agent_routes
+from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
 from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
@@ -45,6 +52,7 @@ def create_app(
         login_attempts=PendingAttempts(settings.login_attempt_lifetime),
         flow_attempts=PendingAttempts(settings.login_attempt_lifetime),
         account_events=AccountEvents(),
+        agent_proofs=ReplayCache(),
     )
 
     @asynccontextmanager
@@ -61,16 +69,18 @@ def create_app(
     app.add_middleware(SessionRenewalMiddleware)
     app.add_middleware(PortalSecurityMiddleware, origin=settings.public_origin)
     app.add_exception_handler(SignInRequired, _sign_in_required)
+    app.add_exception_handler(AgentRefused, agent_refused)
     app.mount("/static", static_files(), name="static")
     app.include_router(health.router)
     app.include_router(account_routes.router)
     app.include_router(signup_routes.router)
     app.include_router(account_page_routes.router)
     app.include_router(base_routes.router)
+    app.include_router(agent_routes.router)
     return app
 
 
 async def _sign_in_required(request: Request, exc: Exception) -> Response:
     if request.method in SAFE_METHODS:
-        return RedirectResponse("/login", status_code=303)
+        return RedirectResponse(login_url(request), status_code=303)
     return JSONResponse({"error": "Sign in first.", "next": "/login"}, status_code=401)

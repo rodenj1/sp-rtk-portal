@@ -7,6 +7,7 @@ carry ``data-action="/path"`` and the script posts them as JSON.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,15 @@ from starlette.responses import HTMLResponse
 _HERE = Path(__file__).parent
 
 templates = Jinja2Templates(directory=_HERE / "templates")
+
+
+def _utc(value: datetime, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """``{{ when | utc("%H:%M") }}``: a timestamp in UTC, whatever the
+    database session's time zone."""
+    return value.astimezone(UTC).strftime(fmt)
+
+
+templates.env.filters["utc"] = _utc
 
 
 def static_files() -> StaticFiles:

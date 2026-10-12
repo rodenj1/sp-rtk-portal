@@ -9,10 +9,17 @@
 <h1>Your bases</h1>
 {% if bases %}
 <ul class="bases">
-  {% for base in bases %}<li>{{ base.name }}</li>{% endfor %}
+  {% for base in bases %}
+  <li data-base="{{ base.id }}">
+    <span class="name">{{ base.name }}</span>
+    <span class="state">{% if base.last_seen_at %}Last seen {{ base.last_seen_at | utc }} UTC{% else %}Never seen{% endif %}</span>
+    {% if base.software_version %}<span class="version">sp-rtk-base {{ base.software_version }}</span>{% endif %}
+  </li>
+  {% endfor %}
 </ul>
 {% else %}
 <p class="empty">No bases yet. Claim one from its local web UI (Portal page).</p>
 {% endif %}
+<p><a href="/claim">Claim a base with a code</a></p>
 <p class="error" data-error role="alert" hidden></p>
 {% endblock %}

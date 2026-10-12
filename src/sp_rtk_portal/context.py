@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from sp_rtk_portal_protocol import ReplayCache
 from starlette.requests import HTTPConnection
 
 from sp_rtk_portal.accounts.attempts import PendingAttempts
@@ -30,6 +31,8 @@ class PortalContext:
     # TOTP code during recovery or a password change).
     flow_attempts: PendingAttempts
     account_events: AccountEvents
+    # Every agent request proof seen in the last minute (refuses replays).
+    agent_proofs: ReplayCache
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:
