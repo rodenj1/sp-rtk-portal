@@ -205,3 +205,20 @@ async def test_a_foreign_redirect_at_the_end_of_recovery_is_not_followed(
     # The Portal asks Authentik for its own code; it never goes to "to".
     assert resp.json() == {"next": "/"}
     assert "location" not in resp.headers
+
+
+async def test_an_unknown_stage_when_asking_for_a_link_fails_closed(
+    browser: Browser, authentik: FakeAuthentik
+):
+    authentik.add_user(EMAIL, OLD)
+    authentik.script_challenge({"component": "ak-stage-captcha", "site_key": "x"})
+    authentik.script_challenge({"component": "ak-stage-source-oauth"})
+
+    resp = await browser.action(
+        "/recover",
+        {"email": EMAIL, "cf-turnstile-response": authentik.turnstile_token},
+    )
+
+    assert resp.status_code == 502
+    assert "location" not in resp.headers
+    assert resp.json() == {"error": "Something went wrong. Please try again later."}

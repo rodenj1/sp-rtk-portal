@@ -36,3 +36,11 @@ async def upsert_on_login(
     row = await cur.fetchone()
     assert row is not None
     return Account(**row)
+
+
+async def authentik_sub(conn: Connection, account_id: int) -> str:
+    """The account's Authentik user UUID (``sub``, with ``sub_mode = user_uuid``)."""
+    cur = await conn.execute("SELECT sub FROM account WHERE id = %s", (account_id,))
+    row = await cur.fetchone()
+    assert row is not None
+    return str(row["sub"])

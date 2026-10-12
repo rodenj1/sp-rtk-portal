@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block account %}
 <form class="account" data-action="/logout">
-  <span>{{ account.email }}</span>
+  <a href="/account">{{ account.email }}</a>
   <button type="submit">Sign out</button>
 </form>
 {% endblock %}

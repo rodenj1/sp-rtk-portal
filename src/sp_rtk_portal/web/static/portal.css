@@ -15,3 +15,5 @@ button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
 .empty { color: #888; }
 .notice { padding: .5rem .75rem; border-left: 3px solid var(--accent); }
 .links { font-size: .9rem; }
+.qr svg { width: 12rem; height: 12rem; background: #fff; padding: .5rem; }
+.secret { word-break: break-all; }
