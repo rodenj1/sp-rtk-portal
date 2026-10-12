@@ -1,0 +1,80 @@
+# Publish the Portal image to GHCR when a version tag is pushed:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# produces ghcr.io/rodenj1/sp-rtk-portal:0.1.0, :0.1 and :sha-<short>.
+# homelab-talos pins the image by digest
+# (clusters/production/apps/sp-rtk-portal/deployment.yaml); the digest is
+# printed in this run's summary.
+name: image
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.14"
+      - run: uv sync --frozen
+      - run: uv run ruff check . && uv run ruff format --check .
+      # Postgres from pgserver, the path the suite is proven on (the
+      # testcontainers path is untested).
+      - run: uv run pytest
+        env:
+          PORTAL_TEST_NO_DOCKER: "1"
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/sp-rtk-portal
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=sha,prefix=sha-,format=short
+
+      - uses: docker/setup-buildx-action@v3
+
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### ghcr.io/${{ github.repository_owner }}/sp-rtk-portal"
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo
+            echo '${{ steps.meta.outputs.tags }}' | sed 's/^/- /'
+          } >> "$GITHUB_STEP_SUMMARY"
