@@ -1,0 +1,15 @@
+:root { color-scheme: light dark; --accent: #2563eb; --error: #b91c1c; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.5 system-ui, sans-serif; }
+.topbar { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: .75rem 1rem; border-bottom: 1px solid #8884; }
+.brand { font-weight: 600; }
+.account { display: flex; align-items: center; gap: .75rem; }
+main { max-width: 48rem; margin: 0 auto; padding: 1rem; }
+.card { max-width: 24rem; margin: 3rem auto; }
+form[data-step] { display: grid; gap: .75rem; }
+form[hidden], [hidden] { display: none; }
+label { display: grid; gap: .25rem; }
+input { font: inherit; padding: .5rem; }
+button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
+.error { color: var(--error); }
+.empty { color: #888; }

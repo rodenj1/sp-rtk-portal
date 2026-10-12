@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block account %}
+<form class="account" data-action="/logout">
+  <span>{{ account.email }}</span>
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}
+{% block main %}
+<h1>Your bases</h1>
+{% if bases %}
+<ul class="bases">
+  {% for base in bases %}<li>{{ base.name }}</li>{% endfor %}
+</ul>
+{% else %}
+<p class="empty">No bases yet. Claim one from its local web UI (Portal page).</p>
+{% endif %}
+<p class="error" data-error role="alert" hidden></p>
+{% endblock %}

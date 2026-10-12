@@ -1,15 +1,18 @@
 """What every route handler can reach: settings, clock, database, Authentik.
 
-Handlers get it with ``ctx: PortalContext = Depends(portal_context)``.
+Handlers get it with ``ctx: PortalContext = Depends(portal_context)``. A new
+module that needs process-wide state (the tunnel broker, rate limiters) adds
+a field here and builds it in ``app.create_app``.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-import httpx
 from starlette.requests import HTTPConnection
 
+from sp_rtk_portal.accounts.attempts import PendingAttempts
+from sp_rtk_portal.accounts.authentik import Authentik
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
@@ -20,7 +23,8 @@ class PortalContext:
     settings: Settings
     clock: Clock
     db: Database
-    authentik_transport: httpx.AsyncBaseTransport | None = None
+    authentik: Authentik
+    login_attempts: PendingAttempts
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:

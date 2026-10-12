@@ -6,14 +6,21 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from sp_rtk_portal import health
+from sp_rtk_portal.accounts import routes as account_routes
+from sp_rtk_portal.accounts.attempts import PendingAttempts
+from sp_rtk_portal.accounts.authentik import Authentik
+from sp_rtk_portal.accounts.deps import SessionRenewalMiddleware, SignInRequired
+from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Database
-from sp_rtk_portal.web.security import PortalSecurityMiddleware
+from sp_rtk_portal.web.security import SAFE_METHODS, PortalSecurityMiddleware
+from sp_rtk_portal.web.templates import static_files
 
 
 def create_app(
@@ -27,11 +34,13 @@ def create_app(
     ``clock`` and ``authentik_transport`` exist for the test harness: a fake
     clock, and a transport that reaches a fake Authentik in-process.
     """
+    clock = clock or SystemClock()
     ctx = PortalContext(
         settings=settings,
-        clock=clock or SystemClock(),
+        clock=clock,
         db=Database(settings.database_url),
-        authentik_transport=authentik_transport,
+        authentik=Authentik(settings, clock, authentik_transport),
+        login_attempts=PendingAttempts(settings.login_attempt_lifetime),
     )
 
     @asynccontextmanager
@@ -44,6 +53,18 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.portal = ctx
+    # Added last runs first: the security guard sees every request first.
+    app.add_middleware(SessionRenewalMiddleware)
     app.add_middleware(PortalSecurityMiddleware, origin=settings.public_origin)
+    app.add_exception_handler(SignInRequired, _sign_in_required)
+    app.mount("/static", static_files(), name="static")
     app.include_router(health.router)
+    app.include_router(account_routes.router)
+    app.include_router(base_routes.router)
     return app
+
+
+async def _sign_in_required(request: Request, exc: Exception) -> Response:
+    if request.method in SAFE_METHODS:
+        return RedirectResponse("/login", status_code=303)
+    return JSONResponse({"error": "Sign in first.", "next": "/login"}, status_code=401)
