@@ -1,6 +1,14 @@
-"""Seam-1 fixtures. Tests use ``portal``, ``browser``, ``authentik`` and ``clock``.
+"""Seam-1 fixtures.
 
-See SCRATCH notes / README "Tests" for what each fixture is for.
+- ``portal``: the real app, running (lifespan entered) against this test's own
+  database. ``portal.browser(ip=...)`` opens another browser; ``portal.query``
+  reads the database directly.
+- ``browser``: one browser on the Portal, keeping cookies. ``browser.action``
+  sends a state-changing request the way the Portal's pages do;
+  ``browser.sign_in`` runs the login steps; ``browser.http`` is the raw client.
+- ``authentik``: the fake Authentik (``add_user``, ``script_challenge``, ...).
+- ``clock``: the fake clock the Portal reads (``clock.advance(days=30)``).
+- ``database_url``: a fresh database cloned from the migrated template.
 """
 
 from __future__ import annotations
