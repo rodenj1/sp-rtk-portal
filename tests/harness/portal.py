@@ -93,6 +93,11 @@ class Portal:
         self.authentik = authentik
         self.origin = ORIGIN
 
+    @property
+    def context(self) -> Any:
+        """The app's ``PortalContext``, for wiring hooks (e.g. account events)."""
+        return self.app.state.portal
+
     @asynccontextmanager
     async def browser(self, ip: str = CLIENT_IP) -> AsyncIterator[Browser]:
         transport = httpx.ASGITransport(app=self.app, client=(ip, 50000))

@@ -47,10 +47,6 @@ AUTHENTICATOR_TOTP = "ak-stage-authenticator-totp"
 ACCESS_DENIED = "ak-stage-access-denied"
 REDIRECT = "xak-flow-redirect"
 
-# A flow restarted from its first stage after ``flow_token=`` means Authentik
-# didn't accept the token: the link was used already or has expired.
-_FIRST_STAGES = frozenset({CAPTCHA, IDENTIFICATION, PROMPT})
-
 CAPTCHA_FAILED = "The captcha check failed. Please try again."
 
 
@@ -148,6 +144,13 @@ class Authentik:
             s.recovery_flow_slug: frozenset({EMAIL, AUTHENTICATOR_VALIDATE, REDIRECT}),
             s.totp_setup_flow_slug: frozenset({AUTHENTICATOR_TOTP, REDIRECT}),
             s.password_change_flow_slug: frozenset({AUTHENTICATOR_VALIDATE, REDIRECT}),
+        }
+        # The stages before the email stage. Getting one back after opening an
+        # emailed link (``flow_token=``) means Authentik didn't accept the
+        # token and started the flow over: the link was used or has expired.
+        self._before_email: dict[str, frozenset[str]] = {
+            s.enrollment_flow_slug: frozenset({CAPTCHA, PROMPT}),
+            s.recovery_flow_slug: frozenset({CAPTCHA, IDENTIFICATION}),
         }
 
     # --- login -------------------------------------------------------------
@@ -325,7 +328,7 @@ class Authentik:
         attempt.query = {}
         if (
             from_link
-            and challenge.get("component") in _FIRST_STAGES
+            and challenge.get("component") in self._before_email[attempt.slug]
             and not challenge.get("response_errors")
         ):
             return LinkExpired()
