@@ -13,14 +13,15 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from sp_rtk_portal import audit
-from sp_rtk_portal.accounts import attempts, sessions
+from sp_rtk_portal.accounts import attempts, events, sessions
 from sp_rtk_portal.accounts.authentik import (
     AuthentikFailedClosed,
+    FlowAttempt,
     Identity,
-    LoginAttempt,
     NeedsTotp,
     Outcome,
 )
+from sp_rtk_portal.accounts.events import PasswordChanged
 from sp_rtk_portal.accounts.store import upsert_on_login
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.web.client_ip import client_ip
@@ -46,8 +47,8 @@ class TotpStep(BaseModel):
 
 
 @router.get("/login", response_class=HTMLResponse)
-async def login_page(request: Request) -> HTMLResponse:
-    return render(request, "login.html", title="Sign in")
+async def login_page(request: Request, verified: str = "") -> HTMLResponse:
+    return render(request, "login.html", title="Sign in", verified=verified == "1")
 
 
 @router.post("/login")
@@ -58,7 +59,7 @@ async def login(
     try:
         attempt, outcome = await ctx.authentik.sign_in(step.email, step.password, ip)
     except AuthentikFailedClosed as e:
-        return _failed_closed(e)
+        return failed_closed(e)
     return await _respond(request, ctx, attempt, outcome, WRONG_CREDENTIALS)
 
 
@@ -74,7 +75,7 @@ async def login_totp(
         outcome = await ctx.authentik.submit_totp(attempt, step.code)
     except AuthentikFailedClosed as e:
         ctx.login_attempts.drop(key)
-        return _failed_closed(e)
+        return failed_closed(e)
     return await _respond(request, ctx, attempt, outcome, WRONG_CODE)
 
 
@@ -93,47 +94,58 @@ async def logout(
 async def _respond(
     request: Request,
     ctx: PortalContext,
-    attempt: LoginAttempt,
+    attempt: FlowAttempt,
     outcome: Outcome,
     wrong: str,
 ) -> JSONResponse:
     if isinstance(outcome, Identity):
-        return await _signed_in(request, ctx, outcome)
+        response = await signed_in(request, ctx, outcome)
+        ctx.login_attempts.drop(request.cookies.get(attempts.COOKIE))
+        response.delete_cookie(attempts.COOKIE, path="/", secure=True, httponly=True)
+        return response
     if isinstance(outcome, NeedsTotp):
-        key = ctx.login_attempts.put(attempt, ctx.clock.now())
         response = JSONResponse({"step": "totp"})
-        response.set_cookie(
-            attempts.COOKIE,
-            key,
-            max_age=int(ctx.login_attempts.lifetime.total_seconds()),
-            path="/",
-            secure=True,
-            httponly=True,
-            samesite="strict",
-        )
+        attempts.keep(ctx.login_attempts, attempts.COOKIE, attempt, ctx, response)
         return response
     return JSONResponse({"error": wrong}, status_code=401)
 
 
-async def _signed_in(
-    request: Request, ctx: PortalContext, identity: Identity
+async def signed_in(
+    request: Request,
+    ctx: PortalContext,
+    identity: Identity,
+    *,
+    recovered: bool = False,
+    next_url: str = "/",
 ) -> JSONResponse:
+    """Start a Portal session for whoever Authentik says signed in.
+
+    After a recovery, the ``PasswordChanged`` hooks run first (in the same
+    transaction), so they can end every session that existed before it.
+    """
     now = ctx.clock.now()
+    ip = client_ip(request)
     lifetime = ctx.settings.session_lifetime
     async with ctx.db.connection() as conn:
         account = await upsert_on_login(conn, identity, now)
+        if recovered:
+            await audit.record(
+                conn, at=now, kind=audit.PASSWORD_RECOVERY, account_id=account.id, ip=ip
+            )
+            await ctx.account_events.password_changed(
+                conn, PasswordChanged(account.id, now, events.RECOVERY, None)
+            )
         token = await sessions.start(conn, account.id, now, lifetime)
-        await audit.record(
-            conn, at=now, kind=audit.LOGIN, account_id=account.id, ip=client_ip(request)
-        )
-    ctx.login_attempts.drop(request.cookies.get(attempts.COOKIE))
+        await audit.record(conn, at=now, kind=audit.LOGIN, account_id=account.id, ip=ip)
     log.info("account %s signed in", account.id)
-    response = JSONResponse({"next": "/"})
+    response = JSONResponse({"next": next_url})
     sessions.set_cookie(response, token, lifetime)
-    response.delete_cookie(attempts.COOKIE, path="/", secure=True, httponly=True)
     return response
 
 
-def _failed_closed(error: AuthentikFailedClosed) -> JSONResponse:
-    log.warning("sign-in failed closed: %s", error)
-    return JSONResponse({"error": UNAVAILABLE}, status_code=502)
+def failed_closed(
+    error: AuthentikFailedClosed, message: str = UNAVAILABLE
+) -> JSONResponse:
+    """Authentik did something unexpected: an error, never a redirect."""
+    log.warning("Authentik flow failed closed: %s", error)
+    return JSONResponse({"error": message}, status_code=502)

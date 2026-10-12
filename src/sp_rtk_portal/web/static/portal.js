@@ -37,6 +37,8 @@ async function submitAction(form) {
     if (reply.next) { window.location.assign(reply.next); return; }
     if (reply.step) showStep(reply.step);
     showError(document, reply.error || (resp.ok ? "" : "Something went wrong."));
+    // A Turnstile answer is good for one try: get a fresh one after an error.
+    if (!resp.ok && window.turnstile) window.turnstile.reset();
   } catch (e) {
     showError(document, "Network error. Please try again.");
   } finally {

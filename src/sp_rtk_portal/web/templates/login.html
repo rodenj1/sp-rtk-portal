@@ -2,6 +2,7 @@
 {% block main %}
 <section class="card">
   <h1>Sign in</h1>
+  {% if verified %}<p class="notice">Email confirmed. You can sign in now.</p>{% endif %}
   <form data-action="/login" data-step="password">
     <label>Email <input name="email" type="email" autocomplete="username" required></label>
     <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
@@ -14,5 +15,6 @@
     <button type="submit">Verify</button>
   </form>
   <p class="error" data-error role="alert" hidden></p>
+  <p class="links"><a href="/signup">Create an account</a> · <a href="/recover">Forgot your password?</a></p>
 </section>
 {% endblock %}

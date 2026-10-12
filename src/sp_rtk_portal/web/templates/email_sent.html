@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block main %}
+<section class="card">
+  <h1>Check your email</h1>
+  {% if purpose == "signup" %}
+  <p>We sent you a link to confirm your email address. Open it to finish creating your account.</p>
+  {% else %}
+  <p>If an account uses that address, we sent it a link to choose a new password.</p>
+  {% endif %}
+  <p class="links"><a href="/login">Back to sign in</a></p>
+</section>
+{% endblock %}

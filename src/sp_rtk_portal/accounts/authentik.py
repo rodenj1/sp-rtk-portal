@@ -1,13 +1,22 @@
-"""Headless Authentik login (ADR 0003).
+"""Headless Authentik (ADR 0003): login, enrollment, recovery, TOTP setup and
+password change, all on the Portal's own pages.
 
-The Portal runs the pinned login flow through Authentik's flow executor API,
-then completes OIDC authorization code + PKCE itself, as a
+The Portal runs the pinned Portal flows through Authentik's flow executor API.
+Each flow is driven the same way: the Portal answers the stages it was given
+answers for, and stops at the first stage that needs the user (a TOTP code, an
+emailed link) or ends the flow. A login (or a recovery, which signs the user
+in) then completes OIDC authorization code + PKCE itself, as a
 backend-for-frontend. The browser never talks to Authentik.
 
-Anything unexpected (an unknown stage, a redirect somewhere else, a bad
-token response) raises ``AuthentikFailedClosed``: the Portal shows an error and
-never follows Authentik anywhere. The Portal keeps no Authentik tokens: they
-are read once to learn who signed in, then dropped.
+Anything unexpected (an unknown stage, a stage coming back without errors, a
+redirect somewhere else, a bad token response) raises
+``AuthentikFailedClosed``: the Portal shows an error and never follows
+Authentik anywhere. The Portal keeps no Authentik tokens: they are read once
+to learn who signed in, then dropped.
+
+Emailed links land on the Portal (``/verify?t=`` and ``/reset?t=``). Opening
+one runs the flow again with ``flow_token=<t>``, which makes Authentik restore
+the paused flow in a new session, so the link works in any browser.
 """
 
 from __future__ import annotations
@@ -30,13 +39,23 @@ from sp_rtk_portal.config import Settings
 
 IDENTIFICATION = "ak-stage-identification"
 PASSWORD = "ak-stage-password"
+CAPTCHA = "ak-stage-captcha"
+PROMPT = "ak-stage-prompt"
+EMAIL = "ak-stage-email"
 AUTHENTICATOR_VALIDATE = "ak-stage-authenticator-validate"
+AUTHENTICATOR_TOTP = "ak-stage-authenticator-totp"
 ACCESS_DENIED = "ak-stage-access-denied"
 REDIRECT = "xak-flow-redirect"
 
+# A flow restarted from its first stage after ``flow_token=`` means Authentik
+# didn't accept the token: the link was used already or has expired.
+_FIRST_STAGES = frozenset({CAPTCHA, IDENTIFICATION, PROMPT})
+
+CAPTCHA_FAILED = "The captcha check failed. Please try again."
+
 
 class AuthentikFailedClosed(Exception):
-    """Authentik did something the Portal doesn't expect. Sign-in stops."""
+    """Authentik did something the Portal doesn't expect. The flow stops."""
 
 
 @dataclass(frozen=True)
@@ -56,24 +75,59 @@ class NeedsTotp:
 
 @dataclass(frozen=True)
 class Rejected:
-    """Authentik refused the credentials or the code."""
+    """Authentik refused an answer. ``stage`` is the component it re-sent."""
 
     message: str
+    stage: str = ""
 
 
-Outcome = Identity | NeedsTotp | Rejected
+@dataclass(frozen=True)
+class EmailSent:
+    """The flow paused until the user opens the emailed link."""
+
+
+@dataclass(frozen=True)
+class LinkExpired:
+    """The emailed link was already used, or has expired."""
+
+
+@dataclass(frozen=True)
+class TotpSetup:
+    """A new TOTP secret to show the user, waiting for a confirmation code."""
+
+    config_url: str
+    secret: str
+
+
+@dataclass(frozen=True)
+class Done:
+    """The flow finished without signing anyone in."""
+
+
+Outcome = Identity | NeedsTotp | Rejected | EmailSent | LinkExpired | TotpSetup | Done
 
 
 @dataclass
-class LoginAttempt:
-    """One run of the login flow. Lives server-side between the login steps."""
+class FlowAttempt:
+    """One run of a flow. Lives server-side between the steps of a page."""
 
     client_ip: str | None
+    slug: str = ""
+    # The answer to give each stage, by component. Each is given once.
+    answers: dict[str, dict[str, Any]] = field(default_factory=dict)
+    answered: set[str] = field(default_factory=set)
+    # Extra query for the first executor call (``flow_token``).
+    query: dict[str, str] = field(default_factory=dict)
+    # The Portal account a signed-in flow (TOTP setup) belongs to.
+    account_id: int | None = None
     cookies: httpx.Cookies = field(default_factory=httpx.Cookies)
     state: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     nonce: str = field(default_factory=lambda: secrets.token_urlsafe(24))
     code_verifier: str = field(default_factory=lambda: secrets.token_urlsafe(48))
-    stage: str = IDENTIFICATION
+    stage: str = ""
+    # The challenge the flow stopped at last.
+    challenge: dict[str, Any] = field(default_factory=dict)
+    totp_setup: TotpSetup | None = None
 
 
 class Authentik:
@@ -86,84 +140,263 @@ class Authentik:
         self._settings = settings
         self._clock = clock
         self._transport = transport
+        s = settings
+        # Where each flow may stop. Anything else fails closed.
+        self._endings: dict[str, frozenset[str]] = {
+            s.login_flow_slug: frozenset({AUTHENTICATOR_VALIDATE, REDIRECT}),
+            s.enrollment_flow_slug: frozenset({EMAIL, REDIRECT}),
+            s.recovery_flow_slug: frozenset({EMAIL, AUTHENTICATOR_VALIDATE, REDIRECT}),
+            s.totp_setup_flow_slug: frozenset({AUTHENTICATOR_TOTP, REDIRECT}),
+            s.password_change_flow_slug: frozenset({AUTHENTICATOR_VALIDATE, REDIRECT}),
+        }
 
-    # --- the steps the login page drives ---------------------------------
+    # --- login -------------------------------------------------------------
 
     async def sign_in(
         self, email: str, password: str, client_ip: str | None
-    ) -> tuple[LoginAttempt, Outcome]:
-        """Start the flow and submit email + password."""
-        attempt = LoginAttempt(client_ip=client_ip)
-        challenge = await self._executor(attempt, "GET")
-        _expect(challenge, IDENTIFICATION)
-        body: dict[str, Any] = {"component": IDENTIFICATION, "uid_field": email}
-        if challenge.get("password_fields"):
-            body["password"] = password
-            outcome = await self._advance(attempt, body)
-            if outcome is None:
-                raise AuthentikFailedClosed("password asked for twice")
-            return attempt, outcome
-        outcome = await self._advance(attempt, body)
-        if outcome is None:  # a separate password stage
-            body = {"component": PASSWORD, "password": password}
-            outcome = await self._advance(attempt, body)
-        if outcome is None:
-            raise AuthentikFailedClosed("password stage repeated")
-        return attempt, outcome
+    ) -> tuple[FlowAttempt, Outcome]:
+        """Start the login flow and submit email + password.
 
-    async def submit_totp(self, attempt: LoginAttempt, code: str) -> Outcome:
-        if attempt.stage != AUTHENTICATOR_VALIDATE:
-            raise AuthentikFailedClosed(f"TOTP submitted at stage {attempt.stage!r}")
-        body = {"component": AUTHENTICATOR_VALIDATE, "code": code}
-        outcome = await self._advance(attempt, body)
-        if outcome is None:
-            raise AuthentikFailedClosed("password stage after TOTP")
+        Gives ``Identity``, ``NeedsTotp`` (then ``submit_code``) or ``Rejected``.
+        """
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.login_flow_slug,
+            answers=_credentials(email, password),
+        )
+        return attempt, await self._start(attempt)
+
+    async def submit_code(self, attempt: FlowAttempt, code: str) -> Outcome:
+        """Answer the TOTP stage the flow stopped at: a sign-in code, or the
+        code confirming a new TOTP device. ``Rejected`` allows another try."""
+        if attempt.stage not in (AUTHENTICATOR_VALIDATE, AUTHENTICATOR_TOTP):
+            raise AuthentikFailedClosed(f"code submitted at stage {attempt.stage!r}")
+        body = {"component": attempt.stage, "code": code}
+        challenge = await self._executor(attempt, "POST", body)
+        if challenge.get("response_errors"):
+            _expect(challenge, attempt.stage)
+            return Rejected(_first_error(challenge["response_errors"]), attempt.stage)
+        return await self._settle(attempt, await self._drive(attempt, challenge))
+
+    # Kept for the login route's name for it.
+    submit_totp = submit_code
+
+    async def retry(
+        self, attempt: FlowAttempt, component: str, answer: dict[str, Any]
+    ) -> Outcome:
+        """Answer again a stage that rejected its answer (e.g. a new password
+        that didn't meet the policy), in the same flow session."""
+        if attempt.challenge.get("component") != component:
+            raise AuthentikFailedClosed(f"no rejected {component!r} to answer again")
+        attempt.answers[component] = answer
+        attempt.answered.discard(component)
+        challenge = {
+            k: v for k, v in attempt.challenge.items() if k != "response_errors"
+        }
+        return await self._settle(attempt, await self._drive(attempt, challenge))
+
+    # --- enrollment ----------------------------------------------------------
+
+    async def enroll(
+        self,
+        email: str,
+        password: str,
+        password_repeat: str,
+        turnstile: str,
+        client_ip: str | None,
+    ) -> Outcome:
+        """Start sign-up. Gives ``EmailSent`` or ``Rejected``."""
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.enrollment_flow_slug,
+            answers={
+                CAPTCHA: {"token": turnstile},
+                PROMPT: {
+                    "username": email,
+                    "email": email,
+                    "password": password,
+                    "password_repeat": password_repeat,
+                },
+            },
+        )
+        return await self._start(attempt)
+
+    async def verify_email(self, token: str, client_ip: str | None) -> Outcome:
+        """Finish sign-up from the emailed link. Gives ``Done`` or ``LinkExpired``."""
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.enrollment_flow_slug,
+            query={"flow_token": token},
+        )
+        return await self._start(attempt, from_link=True)
+
+    # --- recovery --------------------------------------------------------------
+
+    async def request_recovery(
+        self, email: str, turnstile: str, client_ip: str | None
+    ) -> Outcome:
+        """Email a recovery link. Gives ``EmailSent`` (whether or not the
+        account exists) or ``Rejected`` (the captcha)."""
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.recovery_flow_slug,
+            answers={
+                CAPTCHA: {"token": turnstile},
+                IDENTIFICATION: {"uid_field": email},
+            },
+        )
+        outcome = await self._start(attempt)
+        if isinstance(outcome, Rejected) and outcome.stage == ACCESS_DENIED:
+            # Authentik's email stage refuses when no such user exists. Say
+            # the same as for a real account, so emails can't be probed.
+            return EmailSent()
         return outcome
+
+    async def reset_password(
+        self, token: str, password: str, password_repeat: str, client_ip: str | None
+    ) -> tuple[FlowAttempt, Outcome]:
+        """Set a new password from the emailed link; the user is then signed in.
+
+        Gives ``Identity``, ``NeedsTotp`` (then ``submit_code``), ``Rejected``
+        or ``LinkExpired``.
+        """
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.recovery_flow_slug,
+            query={"flow_token": token},
+            answers={
+                PROMPT: {"password": password, "password_repeat": password_repeat}
+            },
+        )
+        return attempt, await self._start(attempt, from_link=True)
+
+    # --- a signed-in user's settings -------------------------------------------
+
+    async def start_totp_setup(
+        self, email: str, password: str, client_ip: str | None, account_id: int
+    ) -> tuple[FlowAttempt, Outcome]:
+        """Re-check the password and get a new TOTP secret.
+
+        Gives ``TotpSetup`` (then ``submit_code`` with the app's code) or
+        ``Rejected``.
+        """
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.totp_setup_flow_slug,
+            answers=_credentials(email, password),
+            account_id=account_id,
+        )
+        return attempt, await self._start(attempt)
+
+    async def change_password(
+        self,
+        email: str,
+        current: str,
+        password: str,
+        password_repeat: str,
+        client_ip: str | None,
+        account_id: int,
+    ) -> tuple[FlowAttempt, Outcome]:
+        """Gives ``Done``, ``NeedsTotp`` (then ``submit_code``) or ``Rejected``."""
+        answers = _credentials(email, current)
+        answers[PROMPT] = {"password": password, "password_repeat": password_repeat}
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.password_change_flow_slug,
+            answers=answers,
+            account_id=account_id,
+        )
+        return attempt, await self._start(attempt)
+
+    async def has_totp(self, sub: str) -> bool:
+        """Whether the user has a TOTP device (admin API)."""
+        return bool(await self._totp_devices(sub))
+
+    async def remove_totp(self, sub: str) -> None:
+        """Delete the user's TOTP devices (admin API): Authentik has no flow
+        stage that removes one."""
+        for device in await self._totp_devices(sub):
+            await self._api("DELETE", f"/api/v3/authenticators/admin/totp/{device}/")
 
     # --- flow executor ---------------------------------------------------
 
-    async def _advance(
-        self, attempt: LoginAttempt, body: dict[str, Any]
-    ) -> Outcome | None:
-        """Answer the current stage. ``None`` means Authentik now wants a
-        separate password stage."""
-        challenge = await self._executor(attempt, "POST", body)
-        component = challenge.get("component")
-        if challenge.get("response_errors"):
-            # Authentik re-sent the stage we answered: wrong password or code.
-            _expect(challenge, attempt.stage)
-            return Rejected(_first_error(challenge["response_errors"]))
-        if component == PASSWORD and attempt.stage == IDENTIFICATION:
-            attempt.stage = PASSWORD
-            return None
-        if component == AUTHENTICATOR_VALIDATE and attempt.stage in (
-            IDENTIFICATION,
-            PASSWORD,
+    async def _start(self, attempt: FlowAttempt, *, from_link: bool = False) -> Outcome:
+        challenge = await self._executor(attempt, "GET")
+        attempt.query = {}
+        if (
+            from_link
+            and challenge.get("component") in _FIRST_STAGES
+            and not challenge.get("response_errors")
         ):
+            return LinkExpired()
+        return await self._settle(attempt, await self._drive(attempt, challenge))
+
+    async def _drive(
+        self, attempt: FlowAttempt, challenge: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Answer every stage we have an answer for. Returns the challenge we
+        stopped at: one that needs the user, an error, or the flow's end."""
+        while True:
+            component = str(challenge.get("component"))
+            if challenge.get("response_errors") or component not in attempt.answers:
+                return challenge
+            if component in attempt.answered:
+                raise AuthentikFailedClosed(f"stage {component!r} came back")
+            attempt.answered.add(component)
+            attempt.stage = component
+            body = _answer(challenge, attempt.answers[component])
+            challenge = await self._executor(attempt, "POST", body)
+
+    async def _settle(self, attempt: FlowAttempt, challenge: dict[str, Any]) -> Outcome:
+        attempt.challenge = challenge
+        component = str(challenge.get("component"))
+        if challenge.get("response_errors"):
+            # Authentik re-sent the stage we answered: a wrong answer.
+            _expect(challenge, attempt.stage)
+            if component == CAPTCHA:
+                return Rejected(CAPTCHA_FAILED, CAPTCHA)
+            return Rejected(_first_error(challenge["response_errors"]), component)
+        if component == ACCESS_DENIED:
+            message = challenge.get("error_message") or "Access denied."
+            return Rejected(str(message), ACCESS_DENIED)
+        if component not in self._endings.get(attempt.slug, frozenset()):
+            raise AuthentikFailedClosed(
+                f"unexpected stage {component!r} after {attempt.stage!r}"
+                f" in {attempt.slug!r}"
+            )
+        attempt.stage = component
+        if component == AUTHENTICATOR_VALIDATE:
             classes = {
                 d.get("device_class") for d in challenge.get("device_challenges", [])
             }
             if "totp" not in classes:
                 raise AuthentikFailedClosed(f"unsupported authenticator {classes}")
-            attempt.stage = AUTHENTICATOR_VALIDATE
             return NeedsTotp()
-        if component == ACCESS_DENIED:
-            return Rejected(challenge.get("error_message") or "Access denied.")
-        if component == REDIRECT:
-            attempt.stage = REDIRECT
+        if component == AUTHENTICATOR_TOTP:
+            attempt.totp_setup = _totp_setup(challenge)
+            return attempt.totp_setup
+        if component == EMAIL:
+            return EmailSent()
+        # The flow ended (REDIRECT).
+        if attempt.slug == self._settings.login_flow_slug:
             return await self._complete(attempt, str(challenge.get("to", "")))
-        raise AuthentikFailedClosed(
-            f"unexpected stage {component!r} after {attempt.stage!r}"
-        )
+        if attempt.slug == self._settings.recovery_flow_slug:
+            # The restored plan may redirect wherever the first session asked;
+            # the Portal never follows it, it asks for its own code instead.
+            return await self._complete(attempt, None)
+        return Done()
 
     async def _executor(
-        self, attempt: LoginAttempt, method: str, body: dict[str, Any] | None = None
+        self, attempt: FlowAttempt, method: str, body: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        slug = self._settings.login_flow_slug
-        params = {"query": urlencode({"next": self._authorize_path(attempt)})}
+        query = {"next": self._authorize_path(attempt), **attempt.query}
+        params = {"query": urlencode(query)}
         async with self._client(attempt) as client:
             resp = await client.request(
-                method, f"/api/v3/flows/executor/{slug}/", params=params, json=body
+                method,
+                f"/api/v3/flows/executor/{attempt.slug}/",
+                params=params,
+                json=body,
             )
         if resp.status_code != 200:
             raise AuthentikFailedClosed(f"flow executor returned {resp.status_code}")
@@ -172,9 +405,52 @@ class Authentik:
             raise AuthentikFailedClosed("flow executor returned a non-object")
         return challenge
 
+    # --- admin API ---------------------------------------------------------------
+
+    async def _totp_devices(self, sub: str) -> list[int]:
+        users = await self._api("GET", "/api/v3/core/users/", {"uuid": sub})
+        results = users.get("results") if isinstance(users, dict) else None
+        if not isinstance(results, list) or len(results) != 1:
+            raise AuthentikFailedClosed("user lookup by uuid didn't find one user")
+        pk = results[0].get("pk")
+        devices = await self._api(
+            "GET", "/api/v3/authenticators/admin/all/", {"user": str(pk)}
+        )
+        if not isinstance(devices, list):
+            raise AuthentikFailedClosed("device list isn't a list")
+        return [
+            int(d["pk"])
+            for d in devices
+            if str(d.get("type", "")).lower().endswith("totpdevice")
+        ]
+
+    async def _api(
+        self, method: str, path: str, params: dict[str, str] | None = None
+    ) -> Any:
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self._settings.authentik_api_token}",
+        }
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._settings.authentik_url,
+                transport=self._transport,
+                headers=headers,
+                follow_redirects=False,
+                timeout=10.0,
+            ) as client:
+                resp = await client.request(method, path, params=params)
+        except httpx.HTTPError as e:
+            raise AuthentikFailedClosed(f"Authentik unreachable: {e!r}") from e
+        if resp.status_code == 204:
+            return None
+        if resp.status_code != 200:
+            raise AuthentikFailedClosed(f"{method} {path} returned {resp.status_code}")
+        return resp.json()
+
     # --- OIDC code + PKCE, server-side -----------------------------------
 
-    def _authorize_path(self, attempt: LoginAttempt) -> str:
+    def _authorize_path(self, attempt: FlowAttempt) -> str:
         challenge = _b64url(hashlib.sha256(attempt.code_verifier.encode()).digest())
         query = urlencode(
             {
@@ -190,10 +466,13 @@ class Authentik:
         )
         return f"/application/o/authorize/?{query}"
 
-    async def _complete(self, attempt: LoginAttempt, to: str) -> Identity:
+    async def _complete(self, attempt: FlowAttempt, to: str | None) -> Identity:
+        """Get a code for this attempt's Authentik session and redeem it.
+        ``to`` (where the flow redirected) must be our own authorize URL, unless
+        None: then the redirect is ignored rather than followed."""
         base = self._settings.authentik_url
         expected = urljoin(base, self._authorize_path(attempt))
-        if urljoin(base + "/", to) != expected:
+        if to is not None and urljoin(base + "/", to) != expected:
             raise AuthentikFailedClosed(f"flow redirected to {to!r}")
         async with self._client(attempt) as client:
             resp = await client.get(expected)
@@ -231,7 +510,7 @@ class Authentik:
             email_verified=user.get("email_verified") is True,
         )
 
-    def _code_from(self, resp: httpx.Response, attempt: LoginAttempt) -> str:
+    def _code_from(self, resp: httpx.Response, attempt: FlowAttempt) -> str:
         location = resp.headers.get("location", "")
         if resp.status_code not in (302, 303) or not location.startswith(
             self._settings.oidc_redirect_uri + "?"
@@ -242,7 +521,7 @@ class Authentik:
             raise AuthentikFailedClosed("authorize returned a bad state or no code")
         return query["code"][0]
 
-    def _id_token_claims(self, id_token: str, attempt: LoginAttempt) -> dict[str, Any]:
+    def _id_token_claims(self, id_token: str, attempt: FlowAttempt) -> dict[str, Any]:
         # Received straight from the token endpoint over TLS, so the TLS server
         # check stands in for the signature (OIDC Core 3.1.3.7).
         try:
@@ -268,7 +547,7 @@ class Authentik:
     # --- plumbing ----------------------------------------------------------
 
     @asynccontextmanager
-    async def _client(self, attempt: LoginAttempt) -> AsyncIterator[httpx.AsyncClient]:
+    async def _client(self, attempt: FlowAttempt) -> AsyncIterator[httpx.AsyncClient]:
         """An HTTP client carrying this attempt's Authentik session cookies."""
         headers = {"Accept": "application/json"}
         if attempt.client_ip:
@@ -289,6 +568,40 @@ class Authentik:
                 raise AuthentikFailedClosed(f"Authentik unreachable: {e!r}") from e
             finally:
                 attempt.cookies = client.cookies
+
+
+def _credentials(email: str, password: str) -> dict[str, dict[str, Any]]:
+    """Answers for an identification stage, with or without its own password
+    field, and for a separate password stage."""
+    return {
+        IDENTIFICATION: {"uid_field": email, "password": password},
+        PASSWORD: {"password": password},
+    }
+
+
+def _answer(challenge: dict[str, Any], answer: dict[str, Any]) -> dict[str, Any]:
+    component = challenge["component"]
+    body = dict(answer)
+    if component == IDENTIFICATION and not challenge.get("password_fields"):
+        body.pop("password", None)  # a separate password stage follows
+    if component == PROMPT:
+        # Fill exactly the fields the pinned prompt has; any field we have no
+        # answer for means the flow changed.
+        keys = [f.get("field_key") for f in challenge.get("fields", [])]
+        missing = [k for k in keys if k not in answer]
+        if missing:
+            raise AuthentikFailedClosed(f"prompt asks for unknown fields {missing}")
+        body = {k: answer[k] for k in keys}
+    return {"component": component, **body}
+
+
+def _totp_setup(challenge: dict[str, Any]) -> TotpSetup:
+    url = str(challenge.get("config_url", ""))
+    parts = urlsplit(url)
+    secret = parse_qs(parts.query).get("secret", [""])[0]
+    if parts.scheme != "otpauth" or parts.netloc != "totp" or not secret:
+        raise AuthentikFailedClosed("TOTP setup without a usable otpauth URL")
+    return TotpSetup(config_url=url, secret=secret)
 
 
 def _expect(challenge: dict[str, Any], component: str) -> None:

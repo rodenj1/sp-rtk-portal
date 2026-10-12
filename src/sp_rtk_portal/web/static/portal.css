@@ -13,3 +13,5 @@ input { font: inherit; padding: .5rem; }
 button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
 .error { color: var(--error); }
 .empty { color: #888; }
+.notice { padding: .5rem .75rem; border-left: 3px solid var(--accent); }
+.links { font-size: .9rem; }

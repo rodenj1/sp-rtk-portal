@@ -1,6 +1,8 @@
 """Security rules for the Portal's own pages and endpoints.
 
 - Every Portal response carries a strict CSP with ``frame-ancestors 'none'``.
+  The sign-up and recovery pages also allow Cloudflare Turnstile's script and
+  frame (``TURNSTILE_PAGES``), and nothing else does.
 - Every state-changing request (anything but GET/HEAD/OPTIONS) must have a JSON
   body, carry ``ACTION_HEADER``, and send an ``Origin`` equal to the Portal's.
   That makes requests from a sandboxed base frame (``Origin: null``) and from
@@ -23,17 +25,35 @@ EXEMPT_PREFIXES = ("/b/", "/agent/")
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
-CONTENT_SECURITY_POLICY = "; ".join(
-    [
-        "default-src 'none'",
-        "script-src 'self'",
-        "style-src 'self'",
-        "img-src 'self'",
-        "connect-src 'self'",
-        "form-action 'self'",
-        "base-uri 'none'",
-        "frame-ancestors 'none'",
-    ]
+_CSP = {
+    "default-src": "'none'",
+    "script-src": "'self'",
+    "style-src": "'self'",
+    "img-src": "'self'",
+    "connect-src": "'self'",
+    "form-action": "'self'",
+    "base-uri": "'none'",
+    "frame-ancestors": "'none'",
+}
+
+
+def _policy(extra: dict[str, str]) -> str:
+    merged = dict(_CSP)
+    for directive, source in extra.items():
+        merged[directive] = (
+            f"{merged[directive]} {source}" if directive in merged else source
+        )
+    return "; ".join(f"{k} {v}" for k, v in merged.items())
+
+
+CONTENT_SECURITY_POLICY = _policy({})
+
+# Cloudflare Turnstile loads its script and an iframe from here. Only the pages
+# that show it (sign-up and recovery) allow it.
+TURNSTILE_ORIGIN = "https://challenges.cloudflare.com"
+TURNSTILE_PAGES = frozenset({"/signup", "/recover"})
+TURNSTILE_POLICY = _policy(
+    {"script-src": TURNSTILE_ORIGIN, "frame-src": TURNSTILE_ORIGIN}
 )
 
 PAGE_HEADERS = {
@@ -42,6 +62,12 @@ PAGE_HEADERS = {
     "Referrer-Policy": "same-origin",
     "Cross-Origin-Opener-Policy": "same-origin",
 }
+
+
+def page_headers(path: str) -> dict[str, str]:
+    if path in TURNSTILE_PAGES:
+        return {**PAGE_HEADERS, "Content-Security-Policy": TURNSTILE_POLICY}
+    return PAGE_HEADERS
 
 
 def refusal(origin: str, headers: Headers, method: str) -> str | None:
@@ -68,10 +94,12 @@ class PortalSecurityMiddleware:
             await self.app(scope, receive, send)
             return
 
+        stamped = page_headers(scope["path"])
+
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":
                 headers = MutableHeaders(scope=message)
-                for name, value in PAGE_HEADERS.items():
+                for name, value in stamped.items():
                     headers[name] = value
             await send(message)
 

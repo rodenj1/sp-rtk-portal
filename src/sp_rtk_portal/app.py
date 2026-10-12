@@ -10,10 +10,12 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from sp_rtk_portal import health
+from sp_rtk_portal.accounts import account_page_routes, signup_routes
 from sp_rtk_portal.accounts import routes as account_routes
 from sp_rtk_portal.accounts.attempts import PendingAttempts
 from sp_rtk_portal.accounts.authentik import Authentik
 from sp_rtk_portal.accounts.deps import SessionRenewalMiddleware, SignInRequired
+from sp_rtk_portal.accounts.events import AccountEvents
 from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
@@ -41,6 +43,8 @@ def create_app(
         db=Database(settings.database_url),
         authentik=Authentik(settings, clock, authentik_transport),
         login_attempts=PendingAttempts(settings.login_attempt_lifetime),
+        flow_attempts=PendingAttempts(settings.login_attempt_lifetime),
+        account_events=AccountEvents(),
     )
 
     @asynccontextmanager
@@ -60,6 +64,8 @@ def create_app(
     app.mount("/static", static_files(), name="static")
     app.include_router(health.router)
     app.include_router(account_routes.router)
+    app.include_router(signup_routes.router)
+    app.include_router(account_page_routes.router)
     app.include_router(base_routes.router)
     return app
 

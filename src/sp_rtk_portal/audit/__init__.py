@@ -14,6 +14,10 @@ from psycopg.types.json import Jsonb
 from sp_rtk_portal.db import Connection
 
 LOGIN = "login"
+PASSWORD_CHANGE = "password_change"
+PASSWORD_RECOVERY = "password_recovery"
+TOTP_ENABLED = "totp_enabled"
+TOTP_DISABLED = "totp_disabled"
 
 
 async def record(
