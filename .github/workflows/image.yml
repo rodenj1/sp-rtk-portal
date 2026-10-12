@@ -12,6 +12,10 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      sp_rtk_base_ref:
+        description: "sp-rtk-base ref whose Portal agent the tests run against"
+        default: main
 
 permissions:
   contents: read
@@ -19,8 +23,20 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The seam-1 tests run the real Portal agent, a dev dependency on the
+    # sibling sp-rtk-base checkout (../sp-rtk-base), as in the meta repo.
+    defaults:
+      run:
+        working-directory: sp-rtk-portal
     steps:
       - uses: actions/checkout@v4
+        with:
+          path: sp-rtk-portal
+      - uses: actions/checkout@v4
+        with:
+          repository: rodenj1/sp-rtk-base
+          ref: ${{ inputs.sp_rtk_base_ref || 'main' }}
+          path: sp-rtk-base
       - uses: astral-sh/setup-uv@v6
         with:
           version: "0.11.14"

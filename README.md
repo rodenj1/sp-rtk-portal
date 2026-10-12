@@ -14,6 +14,7 @@ The spec and tickets live in [rodenj1/rtk_development](https://github.com/rodenj
   - `db/`: the Postgres pool and plain-SQL migrations (`db/migrations/NNNN_name.sql`, applied at startup).
 - `protocol/`: the `sp-rtk-portal-protocol` package that sp-rtk-base's Portal agent depends on. See its README.
 - `tests/`: the seam-1 suite. `tests/harness/` holds the fixtures' machinery.
+- `protocol/`: the agent-to-Portal protocol package (see its README), a uv workspace member; its tests in `protocol/tests/` run with the suite.
 
 ## Running
 
@@ -31,6 +32,7 @@ Configuration is read from the environment:
 | `PORTAL_AUTHENTIK_API_TOKEN` | Service account API token (lists and removes a user's TOTP device) |
 | `PORTAL_TURNSTILE_SITE_KEY` | Cloudflare Turnstile site key shown on sign-up and recovery |
 | `PORTAL_OIDC_APP_SLUG` | Default `sp-rtk-portal` |
+| `PORTAL_MAX_BASES_PER_ACCOUNT` | Claimed bases per account, default 25 |
 | `PORTAL_HOST`, `PORTAL_PORT`, `PORTAL_LOG_LEVEL` | Default `0.0.0.0`, `8000`, `INFO` |
 
 ```sh
@@ -57,4 +59,4 @@ uv run pytest tests/test_login.py -k totp
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The suite runs the real app in-process against a throwaway Postgres, a fake Authentik and a faked clock. Postgres comes from, in order: `PORTAL_TEST_DATABASE_URL` (a superuser URL you provide), Docker via testcontainers if Docker is available, or `pgserver` (Postgres binaries installed from PyPI as a dev dependency). Nothing needs installing beyond `uv sync`.
+The suite runs the real app in-process against a throwaway Postgres, a fake Authentik and a faked clock, with the real Portal agent alongside it (`tests/harness/agent.py`). The agent is sp-rtk-base's own code, a dev dependency on the sibling checkout `../sp-rtk-base` (the submodule next to this one in the rtk_development meta repo); a checkout elsewhere needs sp-rtk-base cloned beside it. The image's test job checks it out the same way (sp-rtk-base `main`, or a ref given to a manual run). The Docker image never installs it. Postgres comes from, in order: `PORTAL_TEST_DATABASE_URL` (a superuser URL you provide), Docker via testcontainers if Docker is available, or `pgserver` (Postgres binaries installed from PyPI as a dev dependency). Nothing needs installing beyond `uv sync`.

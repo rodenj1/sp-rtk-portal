@@ -29,10 +29,14 @@ members = ["protocol"]
 
 [tool.uv.sources]
 sp-rtk-portal-protocol = { workspace = true }
+# The real Portal agent for the seam-1 tests: the sibling sp-rtk-base
+# submodule in the rtk_development meta repo (dev only; the image never has it).
+sp-rtk-base = { path = "../sp-rtk-base", editable = true }
 
 [dependency-groups]
 dev = [
     "asgi-lifespan>=2.1",
+    "sp-rtk-base",
     "pgserver>=0.1.4",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -63,3 +67,8 @@ ignore = [
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI handlers take `Depends(...)` defaults.
 extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.uv]
+# sp-rtk-base pins the protocol package at a git commit; the Portal's tests
+# always use the workspace's own copy instead.
+override-dependencies = ["sp-rtk-portal-protocol"]
