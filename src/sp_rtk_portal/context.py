@@ -18,6 +18,7 @@ from sp_rtk_portal.accounts.events import AccountEvents
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
+from sp_rtk_portal.mail import Mailer
 from sp_rtk_portal.tunnel.broker import TunnelBroker
 
 
@@ -36,6 +37,8 @@ class PortalContext:
     agent_proofs: ReplayCache
     # Wakes, tunnels and Remote sessions (process-local: one instance).
     tunnels: TunnelBroker
+    # Email the Portal sends itself (Shares; possible copy, #98).
+    mailer: Mailer
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:

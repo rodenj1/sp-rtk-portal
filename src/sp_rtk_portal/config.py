@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass
 from datetime import timedelta
 
+FALSE = ("0", "false", "no", "off")
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -41,6 +43,19 @@ class Settings:
     # and how often (seconds, real time) Remote session timeouts are checked.
     wake_lifetime: timedelta = timedelta(minutes=5)
     tunnel_sweep_interval: float = 1.0
+    # Email (Shares, #94): the SMTP server Authentik uses. Port 587 with
+    # STARTTLS and login. No host: nothing is sent (logged instead).
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    smtp_starttls: bool = True
+    # Shares (#94): per-base limits, and how long a Pending share waits for
+    # its recipient's first login.
+    max_shared_users_per_base: int = 20
+    max_pending_shares_per_base: int = 10
+    pending_share_lifetime: timedelta = timedelta(days=14)
 
     @property
     def oidc_issuer(self) -> str:
@@ -74,11 +89,26 @@ class Settings:
             **opt("totp_setup_flow_slug"),
             **opt("password_change_flow_slug"),
             **opt("oidc_app_slug"),
+            **opt("smtp_host"),
+            **opt("smtp_username"),
+            **opt("smtp_password"),
+            **opt("smtp_from"),
             **{
                 name: int(env[f"PORTAL_{name.upper()}"])
-                for name in ("max_bases_per_account", "min_protocol_version")
+                for name in (
+                    "max_bases_per_account",
+                    "min_protocol_version",
+                    "smtp_port",
+                    "max_shared_users_per_base",
+                    "max_pending_shares_per_base",
+                )
                 if f"PORTAL_{name.upper()}" in env
             },
+            **(
+                {"smtp_starttls": env["PORTAL_SMTP_STARTTLS"].lower() not in FALSE}
+                if "PORTAL_SMTP_STARTTLS" in env
+                else {}
+            ),
             owner_emails=tuple(
                 e.strip().lower()
                 for e in env.get("PORTAL_OWNER_EMAILS", "").split(",")

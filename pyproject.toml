@@ -49,6 +49,7 @@ dev = [
     "python-multipart>=0.0.32",
     "ruff>=0.6",
     "testcontainers[postgres]>=4.8",
+    "aiosmtpd>=1.4",
 ]
 
 [tool.pytest.ini_options]
