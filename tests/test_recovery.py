@@ -61,13 +61,15 @@ async def test_recovery_link_lands_on_the_portal_and_sets_a_new_password(
             "/reset", {"t": token, "password": NEW, "password_repeat": NEW}
         )
 
-        assert resp.json() == {"next": "/"}
+        assert resp.json() == {"next": "/account/review"}
         assert EMAIL in (await browser.get("/")).text  # signed in
     assert user.password == NEW
 
     async with portal.browser() as other:
         assert (await other.sign_in(EMAIL, OLD)).status_code == 401
-        assert (await other.sign_in(EMAIL, NEW)).json() == {"next": "/"}
+        assert (await other.sign_in(EMAIL, NEW)).json() == {
+            "next": "/account/review"
+        }  # until reviewed
 
     [event] = password_changes
     assert event.how == "recovery"
@@ -95,7 +97,7 @@ async def test_recovery_of_an_account_with_totp_asks_for_the_code(
 
     resp = await browser.action("/reset/totp", {"code": "246810"})
 
-    assert resp.json() == {"next": "/"}
+    assert resp.json() == {"next": "/account/review"}
     assert authentik.users[EMAIL].password == NEW
     assert len(password_changes) == 1
 
@@ -115,7 +117,7 @@ async def test_a_refused_new_password_can_be_retried_with_the_same_link(
     resp = await browser.action(
         "/reset", {"t": token, "password": NEW, "password_repeat": NEW}
     )
-    assert resp.json() == {"next": "/"}
+    assert resp.json() == {"next": "/account/review"}
 
 
 async def test_an_unknown_email_looks_the_same_and_sends_nothing(
@@ -203,7 +205,7 @@ async def test_a_foreign_redirect_at_the_end_of_recovery_is_not_followed(
     )
 
     # The Portal asks Authentik for its own code; it never goes to "to".
-    assert resp.json() == {"next": "/"}
+    assert resp.json() == {"next": "/account/review"}
     assert "location" not in resp.headers
 
 

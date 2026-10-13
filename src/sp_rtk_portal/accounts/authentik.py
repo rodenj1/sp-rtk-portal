@@ -321,6 +321,16 @@ class Authentik:
         for device in await self._totp_devices(sub):
             await self._api("DELETE", f"/api/v3/authenticators/admin/totp/{device}/")
 
+    async def deactivate_user(self, sub: str) -> None:
+        """Deactivate the user (admin API): account deletion. They can no
+        longer sign in, and Authentik keeps the record."""
+        pk = await self._user_pk(sub)
+        user = await self._api(
+            "PATCH", f"/api/v3/core/users/{pk}/", json={"is_active": False}
+        )
+        if not isinstance(user, dict) or user.get("is_active") is not False:
+            raise AuthentikFailedClosed("user wasn't deactivated")
+
     # --- flow executor ---------------------------------------------------
 
     async def _start(self, attempt: FlowAttempt, *, from_link: bool = False) -> Outcome:
@@ -410,12 +420,18 @@ class Authentik:
 
     # --- admin API ---------------------------------------------------------------
 
-    async def _totp_devices(self, sub: str) -> list[int]:
+    async def _user_pk(self, sub: str) -> int:
         users = await self._api("GET", "/api/v3/core/users/", {"uuid": sub})
         results = users.get("results") if isinstance(users, dict) else None
         if not isinstance(results, list) or len(results) != 1:
             raise AuthentikFailedClosed("user lookup by uuid didn't find one user")
         pk = results[0].get("pk")
+        if not isinstance(pk, int) or isinstance(pk, bool):
+            raise AuthentikFailedClosed("user lookup gave no pk")
+        return pk
+
+    async def _totp_devices(self, sub: str) -> list[int]:
+        pk = await self._user_pk(sub)
         devices = await self._api(
             "GET", "/api/v3/authenticators/admin/all/", {"user": str(pk)}
         )
@@ -428,7 +444,11 @@ class Authentik:
         ]
 
     async def _api(
-        self, method: str, path: str, params: dict[str, str] | None = None
+        self,
+        method: str,
+        path: str,
+        params: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
     ) -> Any:
         headers = {
             "Accept": "application/json",
@@ -442,7 +462,7 @@ class Authentik:
                 follow_redirects=False,
                 timeout=10.0,
             ) as client:
-                resp = await client.request(method, path, params=params)
+                resp = await client.request(method, path, params=params, json=json)
         except httpx.HTTPError as e:
             raise AuthentikFailedClosed(f"Authentik unreachable: {e!r}") from e
         if resp.status_code == 204:

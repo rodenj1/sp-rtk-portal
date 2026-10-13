@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel
 
 from sp_rtk_portal import audit
-from sp_rtk_portal.accounts import attempts, events, sessions
+from sp_rtk_portal.accounts import attempts, events, review, sessions
 from sp_rtk_portal.accounts.authentik import (
     AUTHENTICATOR_VALIDATE,
     IDENTIFICATION,
@@ -259,10 +259,14 @@ async def _password_outcome(
             await ctx.account_events.password_changed(
                 conn,
                 PasswordChanged(
-                    account.id, now, events.CHANGE, request.cookies.get(sessions.COOKIE)
+                    account.id,
+                    now,
+                    events.CHANGE,
+                    request.cookies.get(sessions.COOKIE),
+                    client_ip(request),
                 ),
             )
-        response = JSONResponse({"next": "/account"})
+        response = JSONResponse({"next": review.PATH})
     else:
         response = _refused(outcome)
     attempts.forget(ctx.flow_attempts, attempts.FLOW_COOKIE, key, response)

@@ -29,7 +29,7 @@ Configuration is read from the environment:
 | `PORTAL_LOGIN_FLOW_SLUG` | Default `portal-login` |
 | `PORTAL_ENROLLMENT_FLOW_SLUG`, `PORTAL_RECOVERY_FLOW_SLUG` | Default `portal-enrollment`, `portal-recovery` |
 | `PORTAL_TOTP_SETUP_FLOW_SLUG`, `PORTAL_PASSWORD_CHANGE_FLOW_SLUG` | Default `portal-totp-setup`, `portal-password-change` |
-| `PORTAL_AUTHENTIK_API_TOKEN` | Service account API token (lists and removes a user's TOTP device) |
+| `PORTAL_AUTHENTIK_API_TOKEN` | Service account API token (lists and removes a user's TOTP device; deactivates a user who deletes their account) |
 | `PORTAL_TURNSTILE_SITE_KEY` | Cloudflare Turnstile site key shown on sign-up and recovery |
 | `PORTAL_OIDC_APP_SLUG` | Default `sp-rtk-portal` |
 | `PORTAL_MAX_BASES_PER_ACCOUNT` | Claimed bases per account, default 25 |
@@ -96,6 +96,16 @@ An Operator on site can pause remote access from the base's local Portal page. T
 ## Shares
 
 An Operator Shares a base by email on its Shares page (`/bases/<id>/shares`, linked from the list). An account with that verified email gets a Share at once; otherwise a Pending share waits 14 days and becomes a Share on the first login with that verified email (bound to the account, i.e. its `(iss, sub)`). The recipient and the base's Operator are both emailed every time, even when the Operator made the Share. A Shared user sees the base in their list marked Shared and opens it like the Operator, but gets 403 on Share and 404 on the Shares page and Un-claim. The Operator removes a Shared user (`POST /bases/<id>/shares/<account>/remove`) or withdraws a Pending share; a Shared user leaves (`POST /bases/<id>/leave`). Removing or leaving ends that user's Remote sessions on the base at once, revoking their `/b/` token. Un-claim removes all of the base's Shares. Limits: 20 Shared users and 10 live Pending shares per base. Every Share change is audited. The code is in `src/sp_rtk_portal/shares/` and email in `src/sp_rtk_portal/mail.py`.
+
+## Account security
+
+The account page (`/account`) has **Log out everywhere** (`POST /account/logout-everywhere`): every Portal session of the account ends, this one included, and every Remote session (reason `log_out_everywhere`, revoking its `/b/` token). It also runs automatically after a password change (keeping the session that made it) or a recovery (keeping only the recovering browser), through the `PasswordChanged` hook. Each run is audited `log_out_everywhere` with `trigger` `button`, `password_change` or `password_recovery`.
+
+After a password change or recovery the user lands on `/account/review`: the Shares and Pending shares created from their account in the last 30 days, each with a one-click remove. "Skip for now" leaves it due, so every login lands there again until "Done" (`POST /account/review/done`).
+
+Email is Authentik's: accounts are keyed on `(iss, sub)` and email is re-read at every login, so a changed email keeps its bases and Shares.
+
+**Delete account** (`/account/delete`) lists the bases it will Un-claim, then (`POST /account/delete`) deactivates the Authentik user through the admin API (if that fails, nothing changes), Un-claims every base the account Claimed (audit `unclaim` with `by: account_deleted`), removes the Shares it holds on other bases (`share_left`, `reason: account_deleted`), ends its sessions and audits `account_deleted`. The account row stays, marked `deleted_at`, so the audit log keeps saying who did what. The code is in `src/sp_rtk_portal/accounts/` (`security.py`, `review.py`, `deletion.py`).
 
 ## Container image
 

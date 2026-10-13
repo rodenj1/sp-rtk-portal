@@ -167,7 +167,7 @@ async def test_change_password_fires_the_hook_and_keeps_this_session(
         {"current_password": PASSWORD, "password": NEW, "password_repeat": NEW},
     )
 
-    assert resp.json() == {"next": "/account"}
+    assert resp.json() == {"next": "/account/review"}
     assert authentik.users[EMAIL].password == NEW
     [event] = password_changes
     assert event.how == "change"
@@ -191,7 +191,7 @@ async def test_change_password_with_totp_asks_for_the_code(
     assert first.json() == {"step": "totp"}
     resp = await signed_in.action("/account/password/totp", {"code": "246810"})
 
-    assert resp.json() == {"next": "/account"}
+    assert resp.json() == {"next": "/account/review"}
     assert authentik.users[EMAIL].password == NEW
     assert len(password_changes) == 1
 

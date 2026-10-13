@@ -29,7 +29,8 @@ async def upsert_on_login(
         " ON CONFLICT (iss, sub) DO UPDATE SET"
         "   email = EXCLUDED.email,"
         "   email_verified = EXCLUDED.email_verified,"
-        "   last_login_at = EXCLUDED.last_login_at"
+        "   last_login_at = EXCLUDED.last_login_at,"
+        "   deleted_at = NULL"
         " RETURNING id, email, email_verified",
         (identity.iss, identity.sub, identity.email, identity.email_verified, now, now),
     )
