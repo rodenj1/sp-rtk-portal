@@ -152,6 +152,9 @@ LABELS = {
     "totp_enabled": "Turned on two-step sign-in",
     "totp_disabled": "Turned off two-step sign-in",
     "account_deleted": "Deleted the account",
+    "account_deletion_incomplete": (
+        "Account deletion unfinished: the sign-in wasn't removed"
+    ),
     "claim": "Claimed the base",
     "unclaim": "Un-claimed the base",
     "remote_session_start": "Remote session started",

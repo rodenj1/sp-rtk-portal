@@ -20,6 +20,10 @@ Each Portal flow is a list of stages, mirroring the blueprint (#102):
 - ``portal-password-change``: identification (with password) → deny unless in
   ``portal-users`` → TOTP if the user has one → prompt (password,
   password_repeat) → user write.
+- ``portal-unenrollment``: identification (email only, shows the matched
+  user) → password (its challenge names the pending user) → deny unless in
+  ``portal-users`` → TOTP if the user has one → prompt (one hidden field,
+  ``confirm_delete``) → user delete (deletes the Authentik user, no challenge).
 
 The deny stage answers ``ak-stage-access-denied`` (``DENY_MESSAGE``) for a
 known user outside ``portal-users`` (e.g. a homelab admin) and ends the flow.
@@ -83,6 +87,11 @@ class FakeUser:
     totp_secret: str | None = None
     sub: str = field(default_factory=lambda: str(uuid.uuid4()))
     pk: int = field(default_factory=lambda: secrets.randbelow(10**6) + 1)
+    # The Portal's sign-up sets username = email; it stays when the email changes.
+    username: str = ""
+
+    def __post_init__(self) -> None:
+        self.username = self.username or self.email
 
     @property
     def has_totp(self) -> bool:
@@ -105,6 +114,8 @@ class _FlowSession:
     authenticated: bool = False
     prompt: dict[str, Any] = field(default_factory=dict)
     totp_secret: str | None = None
+    # What was typed at identification (shown as pending_user if no user).
+    identifier: str = ""
 
 
 @dataclass
@@ -152,6 +163,14 @@ FLOWS: dict[str, list[str]] = {
         "prompt-password",
         "user-write",
     ],
+    "portal-unenrollment": [
+        "identification-matched",
+        "password",
+        "deny-non-portal-users",
+        "validate",
+        "prompt-confirm-delete",
+        "user-delete",
+    ],
 }
 
 _INVALID_LOGIN = {
@@ -166,6 +185,7 @@ class FakeAuthentik:
     recovery_flow_slug = "portal-recovery"
     totp_setup_flow_slug = "portal-totp-setup"
     password_change_flow_slug = "portal-password-change"
+    unenrollment_flow_slug = "portal-unenrollment"
     app_slug = "sp-rtk-portal"
     client_id = "portal-client-id"
     client_secret = "portal-client-secret"
@@ -177,6 +197,10 @@ class FakeAuthentik:
         self.clock = clock
         self.users: dict[str, FakeUser] = {}
         self.outbox: list[SentEmail] = []
+        # Users the unenrollment flow deleted; set ``user_delete_fails`` to
+        # make its user delete stage fail instead.
+        self.deleted: list[FakeUser] = []
+        self.user_delete_fails = False
         self.executor_requests: list[httpx.Headers] = []
         self.executor_calls: list[tuple[str, str]] = []
         self.api_calls: list[tuple[str, str]] = []
@@ -229,7 +253,6 @@ class FakeAuthentik:
         app.post("/application/o/token/")(self._token)
         app.get("/application/o/userinfo/")(self._userinfo)
         app.get("/api/v3/core/users/")(self._api_users)
-        app.patch("/api/v3/core/users/{pk}/")(self._api_patch_user)
         app.get("/api/v3/authenticators/admin/all/")(self._api_devices)
         app.delete("/api/v3/authenticators/admin/totp/{pk}/")(self._api_delete_totp)
         return app
@@ -343,14 +366,36 @@ class FakeAuthentik:
         match stage:
             case "identification+password":
                 return _identification(password_fields=True)
-            case "identification":
+            case "identification" | "identification-matched":
                 return _identification(password_fields=False)
+            case "password":
+                return _password(_pending_user(session))
+            case "prompt-confirm-delete":
+                return _prompt_hidden(CONFIRM_DELETE)
+            case "user-delete":
+                if self.user_delete_fails:
+                    # What Authentik answers when a stage raises.
+                    return {
+                        "component": "ak-stage-flow-error",
+                        "error": "Something went wrong.",
+                    }
+                if user is None:
+                    return {
+                        "component": "ak-stage-access-denied",
+                        "error_message": "No Pending User.",
+                    }
+                self.users.pop(user.email.lower(), None)
+                self.deleted.append(user)
+                session.user = None
+                return None
             case "captcha":
                 return _captcha(self.turnstile_site_key)
             case "prompt-enrollment" | "prompt-password":
                 return _prompt(_prompt_fields(stage))
             case "validate":
-                return _authenticator_validate() if user and user.has_totp else None
+                if user and user.has_totp:
+                    return _authenticator_validate(_pending_user(session))
+                return None
             case "totp-setup":
                 assert user is not None
                 session.totp_secret = session.totp_secret or _new_secret()
@@ -408,10 +453,19 @@ class FakeAuthentik:
                 ):
                     return _identification(password_fields=True, errors=_INVALID_LOGIN)
                 session.user = found
-            case "identification":
+            case "identification" | "identification-matched":
                 # Pretends unknown users exist: the flow carries on silently.
-                found = self.users.get(str(body.get("uid_field", "")).lower())
+                session.identifier = str(body.get("uid_field", ""))
+                found = self.users.get(session.identifier.lower())
                 session.user = found if found and found.is_active else None
+            case "password":
+                if user is None or body.get("password") != user.password:
+                    return _password(
+                        _pending_user(session),
+                        errors=_error("password", "Invalid password"),
+                    )
+            case "prompt-confirm-delete":
+                pass  # a hidden field: whatever is sent, it passes
             case "captcha":
                 if body.get("token") != self.turnstile_token:
                     return _captcha(self.turnstile_site_key, errors=_error("token"))
@@ -425,7 +479,7 @@ class FakeAuthentik:
                 assert user is not None
                 if not self._totp_ok(user, body.get("code")):
                     return _authenticator_validate(
-                        errors=_error("code", "Invalid Token")
+                        _pending_user(session), errors=_error("code", "Invalid Token")
                     )
             case "totp-setup":
                 assert user is not None and session.totp_secret is not None
@@ -472,23 +526,11 @@ class FakeAuthentik:
             return JSONResponse({"detail": "Unauthorized"}, status_code=403)
         wanted = request.query_params.get("uuid")
         found = [u for u in self.users.values() if u.sub == wanted]
-        results = [{"pk": u.pk, "uuid": u.sub, "email": u.email} for u in found]
+        results = [
+            {"pk": u.pk, "uuid": u.sub, "username": u.username, "email": u.email}
+            for u in found
+        ]
         return JSONResponse({"pagination": {"count": len(results)}, "results": results})
-
-    async def _api_patch_user(self, pk: int, request: Request) -> Response:
-        """Only ``is_active`` (account deletion deactivates the user)."""
-        if not self._api_allowed(request):
-            return JSONResponse({"detail": "Unauthorized"}, status_code=403)
-        user = self._by_pk(pk)
-        if user is None:
-            return JSONResponse({"detail": "Not found."}, status_code=404)
-        body = await request.json()
-        if set(body) != {"is_active"} or not isinstance(body["is_active"], bool):
-            return JSONResponse({"detail": "unexpected fields"}, status_code=400)
-        user.is_active = body["is_active"]
-        return JSONResponse(
-            {"pk": user.pk, "uuid": user.sub, "is_active": user.is_active}
-        )
 
     async def _api_devices(self, request: Request) -> Response:
         if not self._api_allowed(request):
@@ -591,6 +633,9 @@ class FakeAuthentik:
 
 # --- challenges, shaped like Authentik's ------------------------------------------
 
+# The confirmation prompt's one (hidden) field, right before user delete.
+CONFIRM_DELETE = "confirm_delete"
+
 # A stage passed without the client (``_step``).
 _PASSED = object()
 
@@ -672,10 +717,41 @@ def _prompt_errors(
     return errors
 
 
-def _authenticator_validate(errors: dict[str, Any] | None = None) -> dict[str, Any]:
+def _pending_user(session: _FlowSession) -> str:
+    """The ``pending_user`` Authentik shows: the matched user's username
+    (``show_matched_user``), else what was typed."""
+    return session.user.username if session.user else session.identifier
+
+
+def _password(
+    pending_user: str, errors: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    return _with_errors(
+        {
+            "component": "ak-stage-password",
+            "pending_user": pending_user,
+            "pending_user_avatar": "/static/dist/assets/images/user_default.png",
+        },
+        errors,
+    )
+
+
+def _prompt_hidden(key: str) -> dict[str, Any]:
+    return {
+        "component": "ak-stage-prompt",
+        "fields": [
+            {"field_key": key, "type": "hidden", "required": False, "placeholder": ""}
+        ],
+    }
+
+
+def _authenticator_validate(
+    pending_user: str, errors: dict[str, Any] | None = None
+) -> dict[str, Any]:
     return _with_errors(
         {
             "component": "ak-stage-authenticator-validate",
+            "pending_user": pending_user,
             "device_challenges": [
                 {"device_class": "totp", "device_uid": "1", "challenge": {}}
             ],

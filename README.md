@@ -29,7 +29,8 @@ Configuration is read from the environment:
 | `PORTAL_LOGIN_FLOW_SLUG` | Default `portal-login` |
 | `PORTAL_ENROLLMENT_FLOW_SLUG`, `PORTAL_RECOVERY_FLOW_SLUG` | Default `portal-enrollment`, `portal-recovery` |
 | `PORTAL_TOTP_SETUP_FLOW_SLUG`, `PORTAL_PASSWORD_CHANGE_FLOW_SLUG` | Default `portal-totp-setup`, `portal-password-change` |
-| `PORTAL_AUTHENTIK_API_TOKEN` | Service account API token (lists and removes a user's TOTP device; deactivates a user who deletes their account) |
+| `PORTAL_UNENROLLMENT_FLOW_SLUG` | Default `portal-unenrollment` (account deletion) |
+| `PORTAL_AUTHENTIK_API_TOKEN` | Service account API token: finds a user by uuid, lists and removes their TOTP device. It can't change or delete users: account deletion runs a flow as the user |
 | `PORTAL_TURNSTILE_SITE_KEY` | Cloudflare Turnstile site key shown on sign-up and recovery |
 | `PORTAL_OIDC_APP_SLUG` | Default `sp-rtk-portal` |
 | `PORTAL_MAX_BASES_PER_ACCOUNT` | Claimed bases per account, default 25 |
@@ -119,7 +120,13 @@ After a password change or recovery the user lands on `/account/review`: the Sha
 
 Email is Authentik's: accounts are keyed on `(iss, sub)` and email is re-read at every login, so a changed email keeps its bases and Shares.
 
-**Delete account** (`/account/delete`) lists the bases it will Un-claim, then (`POST /account/delete`) deactivates the Authentik user through the admin API (if that fails, nothing changes), Un-claims every base the account Claimed (audit `unclaim` with `by: account_deleted`), removes the Shares it holds on other bases (`share_left`, `reason: account_deleted`), ends its sessions and audits `account_deleted`. The account row stays, marked `deleted_at`, so the audit log keeps saying who did what. The code is in `src/sp_rtk_portal/accounts/` (`security.py`, `review.py`, `deletion.py`).
+**Delete account** (`/account/delete`) lists the bases it will Un-claim and asks for the password, then the TOTP code if the account has one (`POST /account/delete`, then `POST /account/delete/totp`). It runs Authentik's `portal-unenrollment` flow as the user, in this order:
+
+1. The flow proves the password, the `portal-users` deny stage and the TOTP code, and stops at its confirmation prompt, right before its `user_delete` stage. The Portal identifies with the account's own email and checks that the flow's pending user is the account's own Authentik user (by uuid, through the admin API) before it sends the password. A wrong password or code answers "Wrong password." or "Wrong code.", an account outside `portal-users` gets "Wrong password.", and an unknown stage or another user answers 502. In every one of these cases nothing is deleted.
+2. In one transaction, the Portal Un-claims every base the account Claimed (audit `unclaim` with `by: account_deleted`), removes the Shares it holds on other bases (`share_left`, `reason: account_deleted`), ends its sessions, marks the account `deleted_at` and audits `account_deleted`. If this fails, nothing changes on either side (500) and the user can try again.
+3. The Portal confirms the flow, which deletes the Authentik user, and checks through the admin API that the user is gone. If this last step fails, the Portal's data is already gone but the sign-in remains. The Portal logs an ERROR with the user's uuid, audits `account_deletion_incomplete` (`email`, `sub`, `error`), and sends the user to `/account/delete/unfinished`. That page tells them to sign in again, which gives them their now empty account back, and delete it again. The owner can also delete the user in Authentik by hand.
+
+The account row stays so the audit log keeps saying who did what. Signing up again with the same email creates a new Authentik user, with a new `sub`, so it gets a new account. A tombstoned account is never matched by email, so a Share to that email reaches the new account. The code is in `src/sp_rtk_portal/accounts/` (`security.py`, `review.py`, `deletion.py`).
 
 ## Audit log
 

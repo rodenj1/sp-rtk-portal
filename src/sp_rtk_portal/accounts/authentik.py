@@ -1,5 +1,5 @@
-"""Headless Authentik (ADR 0003): login, enrollment, recovery, TOTP setup and
-password change, all on the Portal's own pages.
+"""Headless Authentik (ADR 0003): login, enrollment, recovery, TOTP setup,
+password change and account deletion, all on the Portal's own pages.
 
 The Portal runs the pinned Portal flows through Authentik's flow executor API.
 Each flow is driven the same way: the Portal answers the stages it was given
@@ -13,6 +13,11 @@ redirect somewhere else, a bad token response) raises
 ``AuthentikFailedClosed``: the Portal shows an error and never follows
 Authentik anywhere. The Portal keeps no Authentik tokens: they are read once
 to learn who signed in, then dropped.
+
+Account deletion runs the unenrollment flow in two parts around the Portal's
+own changes: ``start_deletion`` proves the credentials and stops at the flow's
+confirmation prompt; ``finish_deletion`` confirms it, which makes Authentik's
+user delete stage delete the user, and checks that the user is gone.
 
 Emailed links land on the Portal (``/verify?t=`` and ``/reset?t=``). Opening
 one runs the flow again with ``flow_token=<t>``, which makes Authentik restore
@@ -46,6 +51,11 @@ AUTHENTICATOR_VALIDATE = "ak-stage-authenticator-validate"
 AUTHENTICATOR_TOTP = "ak-stage-authenticator-totp"
 ACCESS_DENIED = "ak-stage-access-denied"
 REDIRECT = "xak-flow-redirect"
+
+# The unenrollment flow's confirmation prompt: one hidden field, right before
+# Authentik's user delete stage (which has no challenge of its own and runs on
+# the GET after the stage before it passes).
+CONFIRM_DELETE = "confirm_delete"
 
 CAPTCHA_FAILED = "The captcha check failed. Please try again."
 # Hops back to the executor one request may take (each runs one stage).
@@ -102,7 +112,23 @@ class Done:
     """The flow finished without signing anyone in."""
 
 
-Outcome = Identity | NeedsTotp | Rejected | EmailSent | LinkExpired | TotpSetup | Done
+@dataclass(frozen=True)
+class ReadyToDelete:
+    """Account deletion: the password (and TOTP code) are proven, and the
+    flow waits at its confirmation, right before it deletes the user
+    (``finish_deletion``)."""
+
+
+Outcome = (
+    Identity
+    | NeedsTotp
+    | Rejected
+    | EmailSent
+    | LinkExpired
+    | TotpSetup
+    | Done
+    | ReadyToDelete
+)
 
 
 @dataclass
@@ -126,6 +152,11 @@ class FlowAttempt:
     # The challenge the flow stopped at last.
     challenge: dict[str, Any] = field(default_factory=dict)
     totp_setup: TotpSetup | None = None
+    # Account deletion: the Authentik username of the account being deleted.
+    # Every challenge naming its pending user must name this one, and one
+    # must (the password stage's) before the flow may get to its end.
+    expect_user: str | None = None
+    user_checked: bool = False
 
 
 class Authentik:
@@ -146,6 +177,9 @@ class Authentik:
             s.recovery_flow_slug: frozenset({EMAIL, AUTHENTICATOR_VALIDATE, REDIRECT}),
             s.totp_setup_flow_slug: frozenset({AUTHENTICATOR_TOTP, REDIRECT}),
             s.password_change_flow_slug: frozenset({AUTHENTICATOR_VALIDATE, REDIRECT}),
+            s.unenrollment_flow_slug: frozenset(
+                {AUTHENTICATOR_VALIDATE, PROMPT, REDIRECT}
+            ),
         }
         # The stages before the email stage. Getting one back after opening an
         # emailed link (``flow_token=``) means Authentik didn't accept the
@@ -323,15 +357,50 @@ class Authentik:
         for device in await self._totp_devices(sub):
             await self._api("DELETE", f"/api/v3/authenticators/admin/totp/{device}/")
 
-    async def deactivate_user(self, sub: str) -> None:
-        """Deactivate the user (admin API): account deletion. They can no
-        longer sign in, and Authentik keeps the record."""
-        pk = await self._user_pk(sub)
-        user = await self._api(
-            "PATCH", f"/api/v3/core/users/{pk}/", json={"is_active": False}
+    # --- account deletion -------------------------------------------------
+
+    async def start_deletion(
+        self, email: str, password: str, client_ip: str | None, sub: str
+    ) -> tuple[FlowAttempt, Outcome]:
+        """Prove the password (the unenrollment flow, run as the user) up to
+        its confirmation. Nothing is deleted yet.
+
+        ``email`` is the Portal account's own; the flow must then name the
+        Authentik user whose uuid is ``sub`` (looked up through the admin
+        API) as its pending user, before the password is sent. Gives
+        ``ReadyToDelete``, ``NeedsTotp`` (then ``submit_code``) or
+        ``Rejected``."""
+        user = await self._user(sub)
+        username = user.get("username")
+        if not isinstance(username, str) or not username:
+            raise AuthentikFailedClosed("user lookup gave no username")
+        attempt = FlowAttempt(
+            client_ip=client_ip,
+            slug=self._settings.unenrollment_flow_slug,
+            answers=_credentials(email, password),
+            expect_user=username,
         )
-        if not isinstance(user, dict) or user.get("is_active") is not False:
-            raise AuthentikFailedClosed("user wasn't deactivated")
+        return attempt, await self._start(attempt)
+
+    async def finish_deletion(self, attempt: FlowAttempt, sub: str) -> None:
+        """Confirm, so the flow deletes the Authentik user, then check through
+        the admin API that the user with uuid ``sub`` is gone. Raises
+        ``AuthentikFailedClosed`` otherwise."""
+        if attempt.slug != self._settings.unenrollment_flow_slug or not (
+            attempt.stage == PROMPT and attempt.user_checked
+        ):
+            raise AuthentikFailedClosed("deletion not confirmed by its flow")
+        attempt.answers[PROMPT] = {CONFIRM_DELETE: "yes"}
+        challenge = {
+            k: v for k, v in attempt.challenge.items() if k != "response_errors"
+        }
+        challenge = await self._drive(attempt, challenge)
+        if challenge.get("component") != REDIRECT or challenge.get("response_errors"):
+            raise AuthentikFailedClosed(
+                f"deletion ended at {challenge.get('component')!r}"
+            )
+        if await self._users(sub):
+            raise AuthentikFailedClosed("the user still exists after its deletion")
 
     # --- flow executor ---------------------------------------------------
 
@@ -357,6 +426,7 @@ class Authentik:
                 return challenge
             if component in attempt.answered:
                 raise AuthentikFailedClosed(f"stage {component!r} came back")
+            _check_user(attempt, challenge)
             attempt.answered.add(component)
             attempt.stage = component
             body = _answer(challenge, attempt.answers[component])
@@ -379,7 +449,10 @@ class Authentik:
                 f"unexpected stage {component!r} after {attempt.stage!r}"
                 f" in {attempt.slug!r}"
             )
+        _check_user(attempt, challenge)
         attempt.stage = component
+        if attempt.slug == self._settings.unenrollment_flow_slug:
+            return _deletion_step(attempt, challenge)
         if component == AUTHENTICATOR_VALIDATE:
             classes = {
                 d.get("device_class") for d in challenge.get("device_challenges", [])
@@ -445,12 +518,24 @@ class Authentik:
 
     # --- admin API ---------------------------------------------------------------
 
-    async def _user_pk(self, sub: str) -> int:
+    async def _users(self, sub: str) -> list[dict[str, Any]]:
+        """The users whose uuid is ``sub``: one, or none once deleted."""
         users = await self._api("GET", "/api/v3/core/users/", {"uuid": sub})
         results = users.get("results") if isinstance(users, dict) else None
-        if not isinstance(results, list) or len(results) != 1:
+        if not isinstance(results, list) or not all(
+            isinstance(u, dict) and u.get("uuid") == sub for u in results
+        ):
+            raise AuthentikFailedClosed("user lookup by uuid gave a bad answer")
+        return results
+
+    async def _user(self, sub: str) -> dict[str, Any]:
+        results = await self._users(sub)
+        if len(results) != 1:
             raise AuthentikFailedClosed("user lookup by uuid didn't find one user")
-        pk = results[0].get("pk")
+        return results[0]
+
+    async def _user_pk(self, sub: str) -> int:
+        pk = (await self._user(sub)).get("pk")
         if not isinstance(pk, int) or isinstance(pk, bool):
             raise AuthentikFailedClosed("user lookup gave no pk")
         return pk
@@ -473,7 +558,6 @@ class Authentik:
         method: str,
         path: str,
         params: dict[str, str] | None = None,
-        json: dict[str, Any] | None = None,
     ) -> Any:
         headers = {
             "Accept": "application/json",
@@ -487,7 +571,7 @@ class Authentik:
                 follow_redirects=False,
                 timeout=10.0,
             ) as client:
-                resp = await client.request(method, path, params=params, json=json)
+                resp = await client.request(method, path, params=params)
         except httpx.HTTPError as e:
             raise AuthentikFailedClosed(f"Authentik unreachable: {e!r}") from e
         if resp.status_code == 204:
@@ -650,6 +734,41 @@ def _totp_setup(challenge: dict[str, Any]) -> TotpSetup:
     if parts.scheme != "otpauth" or parts.netloc != "totp" or not secret:
         raise AuthentikFailedClosed("TOTP setup without a usable otpauth URL")
     return TotpSetup(config_url=url, secret=secret)
+
+
+def _check_user(attempt: FlowAttempt, challenge: dict[str, Any]) -> None:
+    """Account deletion: the flow must be acting on the account's own
+    Authentik user. The password and TOTP challenges name the pending user
+    (``show_matched_user``): check it before answering either."""
+    if attempt.expect_user is None:
+        return
+    if "pending_user" not in challenge:
+        if challenge.get("component") == PASSWORD:
+            raise AuthentikFailedClosed("password stage names no pending user")
+        return
+    if challenge["pending_user"] != attempt.expect_user:
+        raise AuthentikFailedClosed("the flow is acting on another user")
+    attempt.user_checked = True
+
+
+def _deletion_step(attempt: FlowAttempt, challenge: dict[str, Any]) -> Outcome:
+    """Where the unenrollment flow may stop before ``finish_deletion``."""
+    component = challenge.get("component")
+    if component == AUTHENTICATOR_VALIDATE:
+        classes = {
+            d.get("device_class") for d in challenge.get("device_challenges", [])
+        }
+        if "totp" not in classes:
+            raise AuthentikFailedClosed(f"unsupported authenticator {classes}")
+        return NeedsTotp()
+    keys = [f.get("field_key") for f in challenge.get("fields", [])]
+    if component != PROMPT or keys != [CONFIRM_DELETE]:
+        # REDIRECT: the flow ended before its confirmation, so before the
+        # Portal's own changes. Never treat that as a deletion.
+        raise AuthentikFailedClosed(f"deletion flow stopped at {component!r}")
+    if not attempt.user_checked:
+        raise AuthentikFailedClosed("deletion flow never named its pending user")
+    return ReadyToDelete()
 
 
 def _is_executor(location: str, path: str, authentik_url: str) -> bool:

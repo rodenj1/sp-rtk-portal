@@ -16,8 +16,16 @@ again from its own web UI before anyone can reach it remotely, and every Share o
 {% endif %}
 <p>Bases Shared with you leave your list, you're signed out everywhere, and you can no longer
 sign in with this email and password.</p>
-<form data-action="/account/delete" data-confirm="Delete your account for good?">
+<form data-action="/account/delete" data-step="password" data-confirm="Delete your account for good?">
+  <label>Your password <input name="password" type="password" autocomplete="current-password" required></label>
   <button type="submit" data-field="delete-confirm">Delete my account</button>
+  <a href="/account">Cancel</a>
+</form>
+<form data-action="/account/delete/totp" data-step="totp" hidden>
+  <label>Authenticator code
+    <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" required>
+  </label>
+  <button type="submit" data-field="delete-totp">Delete my account</button>
   <a href="/account">Cancel</a>
 </form>
 <p class="error" data-error role="alert" hidden></p>
