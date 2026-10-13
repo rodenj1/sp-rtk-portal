@@ -1,0 +1,502 @@
+# Publish the protocol package (protocol/) to PyPI as sp-rtk-portal-protocol
+# when a GitHub Release whose tag starts with "protocol-v" is published.
+#
+# The tag's version must equal protocol/pyproject.toml's. Portal releases
+# share this repo (tags "v*", built by image.yml on tag push): a Release for
+# any other tag skips every job here, and image.yml never runs for a protocol
+# tag. A protocol Release must not become the repo's "Latest" release; see
+# "Releasing" in protocol/README.md.
+#
+# Authentication is PyPI Trusted Publishing (OIDC), no API token: PyPI trusts
+# (rodenj1/sp-rtk-portal, protocol-release.yml, environment: pypi).
+#
+# Pipeline (mirrors sp-rtk-base's release.yml):
+#   1. verify-version  fail if the tag != protocol/pyproject.toml version,
+#                      the Release is a draft or pre-release, or the version
+#                      is already on PyPI (unless attach_only)
+#   2. lint            ruff + pyright on the protocol package
+#   3. test (matrix)   protocol tests on Python 3.10 to 3.13
+#   4. build           uv build + twine check; upload dist/ artifact
+#   5. smoke           pip-install the wheel into a plain Python 3.10 venv
+#   6. publish-pypi    pypa/gh-action-pypi-publish via OIDC
+#   7. github-release-assets
+#                      sigstore-sign dist files; attach to the GitHub Release
+#
+# attach_only (manual run, for a version already on PyPI) skips 2, 3, 4 and
+# 6: fetch-pypi downloads that version's files from PyPI and checks their
+# sha256 against PyPI's JSON API instead, then 5 and 7 run on them.
+name: protocol-release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)publish, e.g. protocol-v0.9.0. Must exist as a published GitHub Release."
+        required: true
+        type: string
+      attach_only:
+        description: "Version already on PyPI: sign PyPI's files and attach them to the Release. Builds and uploads nothing to PyPI."
+        required: false
+        default: false
+        type: boolean
+
+# One release at a time per tag. Never cancel in progress: a partial upload
+# to PyPI can't be retried under the same version.
+concurrency:
+  group: protocol-release-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Check the tag, the Release and PyPI, and pick the mode:
+  #   publish  build, test and upload a new version
+  #   attach   only sign and attach a version already on PyPI
+  # A version already on PyPI fails here unless attach_only is set, so a
+  # Release for it never reaches the PyPI upload.
+  # ------------------------------------------------------------------
+  verify-version:
+    name: Verify tag, Release and PyPI
+    # Portal Releases (tags "v*") aren't ours: skip the whole run.
+    if: github.event_name != 'release' || startsWith(github.event.release.tag_name, 'protocol-v')
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.versions.outputs.pyproject_version }}
+      tag: ${{ steps.release.outputs.tag }}
+      mode: ${{ steps.pypi.outputs.mode }}
+    steps:
+      - name: Check the tag and its GitHub Release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          IS_DRAFT: ${{ github.event.release.draft }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+        run: |
+          set -euo pipefail
+          tag="${EVENT_TAG:-$INPUT_TAG}"
+          if [[ "$tag" != protocol-v* ]]; then
+            echo "::error::'$tag' is not a protocol tag (protocol-v<version>)."
+            exit 1
+          fi
+
+          # A manual run reads the Release from the API. A draft has no
+          # Release by tag, so it's refused as missing.
+          if [[ -z "$EVENT_TAG" ]]; then
+            if ! release="$(gh api "repos/$REPO/releases/tags/$tag")"; then
+              echo "::error::No published GitHub Release for '$tag'. Create the Release first (see protocol/README.md)."
+              exit 1
+            fi
+            IS_DRAFT="$(jq -r .draft <<<"$release")"
+            IS_PRERELEASE="$(jq -r .prerelease <<<"$release")"
+          fi
+
+          if [[ "${IS_DRAFT:-false}" == "true" ]]; then
+            echo "::error::GitHub Release '$tag' is a draft: refusing to publish."
+            exit 1
+          fi
+          if [[ "${IS_PRERELEASE:-false}" == "true" ]]; then
+            echo "::error::GitHub Release '$tag' is marked as a pre-release. This workflow only publishes stable releases to PyPI."
+            exit 1
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      - name: Compare the tag with the protocol version
+        id: versions
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          tag_version="${TAG#protocol-v}"
+          pyproject_version="$(
+            python3 -c '
+          import tomllib
+          with open("protocol/pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          '
+          )"
+
+          echo "pyproject_version=$pyproject_version" >>"$GITHUB_OUTPUT"
+          echo "Tag:               $TAG (version: $tag_version)"
+          echo "pyproject version: $pyproject_version"
+
+          if [[ "$tag_version" != "$pyproject_version" ]]; then
+            echo "::error::Tag '$TAG' (version '$tag_version') does not match protocol/pyproject.toml version '$pyproject_version'. Bump the version or retag."
+            exit 1
+          fi
+
+      - name: Check PyPI and pick the mode
+        id: pypi
+        env:
+          VERSION: ${{ steps.versions.outputs.pyproject_version }}
+          TAG: ${{ steps.release.outputs.tag }}
+          ATTACH_ONLY: ${{ inputs.attach_only || false }}
+        run: |
+          set -euo pipefail
+          url="https://pypi.org/pypi/sp-rtk-portal-protocol/$VERSION/json"
+          status="$(curl -sS -o /dev/null -w '%{http_code}' "$url")"
+          case "$status" in
+            200) on_pypi=true ;;
+            404) on_pypi=false ;;
+            *)
+              echo "::error::PyPI answered HTTP $status for $url, so it's unknown whether $VERSION is published. Rerun later."
+              exit 1
+              ;;
+          esac
+          echo "sp-rtk-portal-protocol $VERSION on PyPI: $on_pypi"
+
+          if [[ "$ATTACH_ONLY" == "true" ]]; then
+            if [[ "$on_pypi" != "true" ]]; then
+              echo "::error::attach_only: sp-rtk-portal-protocol $VERSION is not on PyPI. Run without attach_only to publish it."
+              exit 1
+            fi
+            mode=attach
+          else
+            if [[ "$on_pypi" == "true" ]]; then
+              echo "::error::sp-rtk-portal-protocol $VERSION is already on PyPI, which never accepts a version twice. Nothing was built or uploaded. To sign PyPI's files and attach them to this Release, run this workflow by hand (Actions > protocol-release > Run workflow) with tag '$TAG' and attach_only ticked. To release new code, bump protocol/pyproject.toml and release a new tag."
+              exit 1
+            fi
+            mode=publish
+          fi
+          echo "mode=$mode" >>"$GITHUB_OUTPUT"
+          echo "Mode: $mode"
+
+  # ------------------------------------------------------------------
+  # Lint / format / type-check the protocol package. Ruff uses the repo's
+  # config (protocol/pyproject.toml extends ../pyproject.toml); pyright
+  # runs in its default mode on Python 3.10, the oldest supported.
+  # ------------------------------------------------------------------
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    needs: verify-version
+    if: needs.verify-version.outputs.mode == 'publish'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.verify-version.outputs.tag }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.14"
+
+      # The ruff that uv.lock pins for the Portal.
+      - name: Ruff lint
+        run: uvx ruff@0.17.0 check protocol
+
+      - name: Ruff format check
+        run: uvx ruff@0.17.0 format --check protocol
+
+      - name: pyright
+        working-directory: protocol
+        run: >
+          uv run --isolated --no-project
+          --python 3.10
+          --with .
+          --with "pyright==1.1.408"
+          pyright --pythonversion 3.10 src
+
+  # The package alone, as a consumer installs it: no workspace, no Portal.
+  # sp-rtk-base still supports Python 3.10, so the package must too.
+  test:
+    name: Test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: [verify-version, lint]
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    defaults:
+      run:
+        working-directory: protocol
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.verify-version.outputs.tag }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.14"
+
+      - name: Run the protocol tests
+        run: >
+          uv run --isolated --no-project
+          --python ${{ matrix.python-version }}
+          --with .
+          --with "pytest>=8.3"
+          --with "pytest-asyncio>=0.24"
+          pytest tests
+
+  build:
+    name: Build distribution
+    runs-on: ubuntu-latest
+    needs: [verify-version, test]
+    defaults:
+      run:
+        working-directory: protocol
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ needs.verify-version.outputs.tag }}
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.14"
+          python-version: "3.12"
+
+      - name: Build sdist and wheel
+        run: uv build --no-sources --out-dir dist
+
+      - name: List built artifacts
+        run: ls -la dist/
+
+      - name: Validate distribution with twine
+        run: uvx twine check --strict dist/*
+
+      - name: Confirm version in built artifacts
+        env:
+          EXPECTED: ${{ needs.verify-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          ok=0
+          for f in dist/*.tar.gz dist/*.whl; do
+            case "$f" in
+              dist/sp_rtk_portal_protocol-"${EXPECTED}".tar.gz|dist/sp_rtk_portal_protocol-"${EXPECTED}"-*.whl)
+                echo "OK: $f"
+                ok=1
+                ;;
+              *)
+                echo "::error::Unexpected artifact $f (expected sp_rtk_portal_protocol ${EXPECTED})"
+                exit 1
+                ;;
+            esac
+          done
+          if [[ "$ok" -eq 0 ]]; then
+            echo "::error::No artifacts found in dist/"
+            exit 1
+          fi
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: dist
+          path: protocol/dist/
+          retention-days: 30
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # attach_only: fetch the exact files PyPI serves for this version and
+  # check each against the sha256 in PyPI's JSON API. Nothing is built.
+  # ------------------------------------------------------------------
+  fetch-pypi:
+    name: Fetch the published files from PyPI
+    runs-on: ubuntu-latest
+    needs: verify-version
+    if: needs.verify-version.outputs.mode == 'attach'
+    steps:
+      - name: Download and verify
+        env:
+          VERSION: ${{ needs.verify-version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir dist
+          python3 - <<'EOF'
+          import hashlib
+          import json
+          import os
+          import re
+          import sys
+          import urllib.request
+
+          version = os.environ["VERSION"]
+          api = f"https://pypi.org/pypi/sp-rtk-portal-protocol/{version}/json"
+          with urllib.request.urlopen(api, timeout=30) as reply:
+              files = json.load(reply)["urls"]
+
+          kinds = {entry["packagetype"] for entry in files}
+          if not {"sdist", "bdist_wheel"} <= kinds:
+              sys.exit(f"::error::Expected an sdist and a wheel on PyPI, got {sorted(kinds)}")
+
+          # Only names of this version's sdist or wheels (also keeps them
+          # inside dist/).
+          wanted = re.compile(
+              rf"sp_rtk_portal_protocol-{re.escape(version)}"
+              r"(\.tar\.gz|-[\w.]+-[\w.]+-[\w.]+\.whl)"
+          )
+          for entry in files:
+              name = entry["filename"]
+              if not wanted.fullmatch(name):
+                  sys.exit(f"::error::Unexpected file on PyPI: {name!r}")
+              if entry.get("yanked"):
+                  print(f"::warning::{name} is yanked on PyPI")
+              expected = entry["digests"]["sha256"]
+              with urllib.request.urlopen(entry["url"], timeout=60) as reply:
+                  body = reply.read()
+              actual = hashlib.sha256(body).hexdigest()
+              if actual != expected:
+                  sys.exit(f"::error::{name}: sha256 {actual} != PyPI's {expected}")
+              with open(os.path.join("dist", name), "wb") as out:
+                  out.write(body)
+              print(f"OK: {name} sha256 {actual}")
+          EOF
+          ls -la dist/
+
+      - name: Upload dist artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: dist
+          path: dist/
+          retention-days: 30
+          if-no-files-found: error
+
+  # ------------------------------------------------------------------
+  # Install the wheel the way a base would: a plain venv (no uv) on the
+  # oldest supported Python, dependencies from the real PyPI. No checkout,
+  # so only dist/ is on hand.
+  # ------------------------------------------------------------------
+  smoke:
+    name: Smoke-test the wheel (Python 3.10, pip)
+    runs-on: ubuntu-latest
+    needs: [verify-version, build, fetch-pypi]
+    if: >-
+      ${{ !cancelled()
+      && needs.verify-version.result == 'success'
+      && (needs.build.result == 'success' || needs.fetch-pypi.result == 'success') }}
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install Python 3.10
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.10"
+
+      - name: Install the wheel into a fresh venv
+        env:
+          PIP_CONFIG_FILE: /dev/null
+          PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          wheels=(dist/*.whl)
+          if [[ ${#wheels[@]} -ne 1 ]]; then
+            echo "::error::Expected one wheel in dist/, found ${#wheels[@]}"
+            exit 1
+          fi
+          python -m venv "$RUNNER_TEMP/smoke"
+          "$RUNNER_TEMP/smoke/bin/python" -m pip install --no-cache-dir \
+            --index-url https://pypi.org/simple "${wheels[0]}"
+
+      - name: Import it
+        working-directory: ${{ runner.temp }}
+        env:
+          EXPECTED: ${{ needs.verify-version.outputs.version }}
+        run: |
+          "$RUNNER_TEMP/smoke/bin/python" -c '
+          import os
+          from importlib.metadata import version
+
+          import sp_rtk_portal_protocol as protocol
+
+          installed = version("sp-rtk-portal-protocol")
+          assert installed == os.environ["EXPECTED"], installed
+          print("sp-rtk-portal-protocol", installed)
+          print("PROTOCOL_VERSION", protocol.PROTOCOL_VERSION)
+          '
+
+  # The `pypi` environment must exist in this repo's settings, and PyPI must
+  # have a trusted publisher for (rodenj1/sp-rtk-portal, protocol-release.yml,
+  # environment: pypi).
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    needs: [verify-version, build, smoke]
+    if: >-
+      ${{ !cancelled()
+      && needs.verify-version.outputs.mode == 'publish'
+      && needs.build.result == 'success'
+      && needs.smoke.result == 'success' }}
+    environment:
+      name: pypi
+      url: https://pypi.org/project/sp-rtk-portal-protocol/${{ needs.verify-version.outputs.version }}/
+    permissions:
+      id-token: write # required for OIDC trusted publishing
+      contents: read
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        # No `with:` block: authentication is automatic via OIDC.
+        uses: pypa/gh-action-pypi-publish@76f52bc884231f62b9a034ebfe128415bbaabdfc # v1.12.4
+
+  # ------------------------------------------------------------------
+  # Sign the files with sigstore and attach them (plus signatures) to the
+  # GitHub Release. Never makes the Release "Latest": that's the Portal's.
+  # ------------------------------------------------------------------
+  github-release-assets:
+    name: Sign & attach to GitHub Release
+    runs-on: ubuntu-latest
+    needs: [verify-version, smoke, publish-pypi, fetch-pypi]
+    if: >-
+      ${{ !cancelled()
+      && needs.smoke.result == 'success'
+      && (needs.publish-pypi.result == 'success'
+          || (needs.verify-version.outputs.mode == 'attach' && needs.fetch-pypi.result == 'success')) }}
+    permissions:
+      contents: write # upload assets to the Release
+      id-token: write # sigstore OIDC signing
+    steps:
+      - name: Download dist artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Sign with sigstore
+        uses: sigstore/gh-action-sigstore-python@f7ad0af51a5648d09a20d00370f0a91c3bdf8f84 # v3.0.0
+        with:
+          inputs: ./dist/*.tar.gz ./dist/*.whl
+          # The default (true) also signs the tag's source archive, a
+          # redundant copy of the already-signed sdist.
+          release-signing-artifacts: false
+
+      - name: List signed artifacts
+        run: ls -la dist/
+
+      - name: Upload assets to GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
+        with:
+          tag_name: ${{ needs.verify-version.outputs.tag }}
+          # Keep the Portal's release as the repo's Latest.
+          make_latest: false
+          files: |
+            dist/*.tar.gz
+            dist/*.whl
+            dist/*.sigstore
+            dist/*.sigstore.json
+          fail_on_unmatched_files: false

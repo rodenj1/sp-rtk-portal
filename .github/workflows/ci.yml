@@ -1,0 +1,226 @@
+# Lint and test the Portal on every push to main and every pull request.
+# image.yml calls this workflow too (workflow_call) before it builds an image.
+#
+# Jobs:
+#   lint      ruff (check + format) over the repo, pyright on the protocol
+#             package as protocol-release.yml runs it
+#   protocol  the protocol package alone on its oldest and newest Python, as
+#             a consumer (sp-rtk-base) installs it
+#   test      the full suite (`uv run pytest`, protocol tests included) on the
+#             Portal's Python, Postgres from Docker via testcontainers, and
+#             Chromium, Firefox and WebKit
+#
+# The suite needs sp-rtk-base checked out beside this repo (../sp-rtk-base, a
+# path dev dependency: the real Portal agent). It uses sp-rtk-base's branch of
+# the same name as this run's branch (PR head or pushed branch) when one
+# exists, else main. An explicit sp_rtk_base_ref input overrides that.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      sp_rtk_base_ref:
+        description: "sp-rtk-base ref to test against (empty: same-named branch if it exists, else main)"
+        required: false
+        default: ""
+        type: string
+  workflow_call:
+    inputs:
+      sp_rtk_base_ref:
+        description: "sp-rtk-base ref to test against (empty: same-named branch if it exists, else main)"
+        required: false
+        default: ""
+        type: string
+
+# Cancel in-progress runs on the same branch/PR when new commits arrive.
+# github.workflow is the caller's name under workflow_call, so image.yml's
+# runs never share a group with CI's.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # Ruff over the whole repo with the version uv.lock pins (no sync, so no
+  # sp-rtk-base checkout), and pyright on the protocol package in its
+  # default mode on Python 3.10, the oldest it supports.
+  # ------------------------------------------------------------------
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.14"
+
+      - name: Read the ruff version from uv.lock
+        id: ruff
+        run: |
+          set -euo pipefail
+          version="$(
+            python3 -c '
+          import tomllib
+          with open("uv.lock", "rb") as f:
+              lock = tomllib.load(f)
+          print(next(p["version"] for p in lock["package"] if p["name"] == "ruff"))
+          '
+          )"
+          echo "ruff $version"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+
+      - name: Ruff lint
+        run: uvx "ruff@${{ steps.ruff.outputs.version }}" check .
+
+      - name: Ruff format check
+        run: uvx "ruff@${{ steps.ruff.outputs.version }}" format --check .
+
+      - name: pyright (protocol)
+        working-directory: protocol
+        run: >
+          uv run --isolated --no-project
+          --python 3.10
+          --with .
+          --with "pyright==1.1.408"
+          pyright --pythonversion 3.10 src
+
+  # ------------------------------------------------------------------
+  # The protocol package alone: no workspace, no Portal. The full suite
+  # below runs these tests on 3.12 only; sp-rtk-base runs 3.10 to 3.13.
+  # (protocol-release.yml runs all four, but only at release time.)
+  # ------------------------------------------------------------------
+  protocol:
+    name: Protocol (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.13"]
+    defaults:
+      run:
+        working-directory: protocol
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.14"
+
+      - name: Run the protocol tests
+        run: >
+          uv run --isolated --no-project
+          --python ${{ matrix.python-version }}
+          --with .
+          --with "pytest>=8.3"
+          --with "pytest-asyncio>=0.24"
+          pytest tests
+
+  # ------------------------------------------------------------------
+  # The full suite on the Portal's Python (requires-python >=3.12, the
+  # Dockerfile's 3.12), with the sibling sp-rtk-base at ../sp-rtk-base.
+  # ------------------------------------------------------------------
+  test:
+    name: Test (Python 3.12)
+    runs-on: ubuntu-latest
+    needs: lint
+    defaults:
+      run:
+        working-directory: sp-rtk-portal
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: sp-rtk-portal
+
+      # sp-rtk-base's branch named like this run's branch, else main: a
+      # feature that spans both repos is tested against its own agent code.
+      - name: Pick the sp-rtk-base ref
+        id: base-ref
+        working-directory: .
+        env:
+          EXPLICIT: ${{ inputs.sp_rtk_base_ref }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${EXPLICIT:-}" ]]; then
+            ref="$EXPLICIT"
+            why="given as input"
+          else
+            rc=0
+            git ls-remote --exit-code --heads \
+              https://github.com/rodenj1/sp-rtk-base.git "refs/heads/$BRANCH" >/dev/null || rc=$?
+            case "$rc" in
+              0) ref="$BRANCH"; why="same-named branch exists" ;;
+              2) ref=main; why="no branch '$BRANCH' in rodenj1/sp-rtk-base" ;;
+              *)
+                echo "::error::git ls-remote on rodenj1/sp-rtk-base failed (exit $rc)."
+                exit 1
+                ;;
+            esac
+          fi
+          echo "::notice::sp-rtk-base ref: $ref ($why)"
+          echo "ref=$ref" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout sp-rtk-base beside the Portal
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: rodenj1/sp-rtk-base
+          ref: ${{ steps.base-ref.outputs.ref }}
+          path: sp-rtk-base
+
+      - name: Show the sp-rtk-base commit
+        working-directory: sp-rtk-base
+        run: git log -1 --format='sp-rtk-base %H %s'
+
+      - name: Install uv and Python 3.12
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.14"
+          python-version: "3.12"
+          enable-cache: true
+          cache-dependency-glob: |
+            sp-rtk-portal/**/pyproject.toml
+            sp-rtk-portal/uv.lock
+
+      # --frozen, not --locked: uv.lock records the sibling's metadata from
+      # the branch it was locked against, which the picked ref may not match.
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          # Default install location for Playwright on Linux.
+          path: ~/.cache/ms-playwright
+          # The browser set is in the key: a cache saved with fewer
+          # browsers must not satisfy an exact hit and skip saving.
+          key: playwright-${{ runner.os }}-chromium-firefox-webkit-${{ hashFiles('sp-rtk-portal/uv.lock') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-chromium-firefox-webkit-
+
+      - name: Install Playwright Chromium + Firefox + WebKit + system deps
+        run: uv run playwright install --with-deps chromium firefox webkit
+
+      # The harness takes Postgres from Docker (testcontainers) whenever a
+      # docker binary or socket exists, and silently falls back to pgserver
+      # otherwise. Fail here rather than test the fallback by accident.
+      - name: Check Docker is reachable
+        run: docker info --format 'Docker {{.ServerVersion}}'
+
+      - name: Run the suite
+        env:
+          # WebKit must run here, not skip.
+          PORTAL_TEST_REQUIRE_WEBKIT: "1"
+        run: uv run pytest -ra

@@ -76,6 +76,8 @@ ignore = [
 extend-immutable-calls = ["fastapi.Depends"]
 
 [tool.uv]
-# sp-rtk-base pins the protocol package at a git commit; the Portal's tests
-# always use the workspace's own copy instead.
+# The Portal's tests always use the workspace's own copy of the protocol,
+# whatever the sibling sp-rtk-base asks for. sp-rtk-base now takes it from
+# PyPI, which a workspace member already satisfies; the override also keeps an
+# older sp-rtk-base checkout (git-pinned protocol) lockable here.
 override-dependencies = ["sp-rtk-portal-protocol"]

@@ -20,16 +20,69 @@ The agent-to-Portal protocol, published from the `sp-rtk-portal` repo so the Por
 
 The package version (`pyproject.toml`) is bumped on every change, so a pinned consumer can tell which shapes it has.
 
-sp-rtk-base depends on it as a Git subdirectory dependency:
+It is published to PyPI, and sp-rtk-base depends on it from there:
 
 ```toml
 [project]
-dependencies = ["sp-rtk-portal-protocol"]
-
-[tool.uv.sources]
-sp-rtk-portal-protocol = { git = "https://github.com/rodenj1/sp-rtk-portal", subdirectory = "protocol", rev = "<commit or tag>" }
+dependencies = ["sp-rtk-portal-protocol>=0.9.0,<1"]
 ```
 
-The `rev` is a full commit sha of this repo. Bump it when the agent needs a newer protocol.
+Raise the lower bound when the agent needs newer shapes. The Portal uses this directory directly, as a uv workspace member.
 
-For local development against a checkout next to it, use `{ path = "../sp-rtk-portal/protocol", editable = true }` instead.
+For local development of both sides at once, point sp-rtk-base at a checkout next to it with `[tool.uv.sources] sp-rtk-portal-protocol = { path = "../sp-rtk-portal/protocol", editable = true }`, and don't commit that.
+
+## Releasing
+
+`.github/workflows/protocol-release.yml` publishes this package to PyPI when a GitHub Release with a `protocol-v<version>` tag is published, the same pipeline as sp-rtk-base's `release.yml`. It refuses a draft or pre-release Release, checks the tag against `version` in this `pyproject.toml`, and refuses a version already on PyPI. Then it runs ruff and pyright, runs these tests on Python 3.10 to 3.13, builds with `uv build` and runs `twine check`. A smoke job installs the wheel with pip into a plain Python 3.10 venv and imports it. The workflow uploads with PyPI Trusted Publishing (OIDC, no token), then signs the files with sigstore and attaches them to the Release.
+
+Portal releases share this repo. The image workflow runs on pushed `v*` tags, and this one skips every Release whose tag isn't `protocol-v*`, so neither triggers the other. The Portal's release stays the repo's **Latest**: never mark a protocol Release as Latest.
+
+Once, before the first release:
+
+1. On pypi.org, under Your account > Publishing > Add a new pending publisher > GitHub, enter:
+   - PyPI project name: `sp-rtk-portal-protocol`
+   - Owner: `rodenj1`
+   - Repository name: `sp-rtk-portal`
+   - Workflow name: `protocol-release.yml`
+   - Environment name: `pypi`
+2. On GitHub, in the sp-rtk-portal repo's Settings > Environments, create an environment named `pypi` (optionally with required reviewers, to approve each upload).
+
+   GitHub offers environments in a private repo only on a paid plan (Pro, Team or Enterprise). If Settings has no Environments page, leave the environment name blank in step 1, and delete the `environment:` block from the workflow's `publish-pypi` job.
+
+Each release:
+
+1. Bump `version` in this `pyproject.toml` on `main` (PyPI never accepts the same version twice).
+2. Tag that commit and push the tag:
+
+   ```sh
+   git tag protocol-v0.10.0
+   git push origin protocol-v0.10.0
+   ```
+
+3. Publish a GitHub Release for the tag, not a pre-release and not Latest:
+
+   ```sh
+   gh release create protocol-v0.10.0 --verify-tag --latest=false \
+     --title "sp-rtk-portal-protocol 0.10.0" --generate-notes
+   ```
+
+   In the web form, untick **Set as the latest release**. If a protocol Release ever becomes Latest, mark the newest Portal release as Latest again.
+4. Watch the protocol-release run under Actions. Once the version is on PyPI, raise sp-rtk-base's lower bound if the agent needs it, then run `uv lock` there.
+
+**Release order.** Publish an sp-rtk-base release only after every `sp-rtk-portal-protocol` version it requires is on PyPI: a base installs the protocol from PyPI, not from this repo. sp-rtk-base's release workflow enforces this too, because its smoke job pip-installs the wheel with its dependencies from PyPI.
+
+To rerun a failed release before anything reached PyPI, run the workflow by hand (Actions > protocol-release > Run workflow) with the tag.
+
+### A version already on PyPI
+
+The workflow refuses to build or upload a version PyPI already has, and fails early with a pointer to `attach_only`. To give such a version its signed files on GitHub (for example 0.9.0, which went to PyPI before this workflow made Releases):
+
+1. If the Release doesn't exist yet, create it on the existing tag, as in step 3. A Release on a tag whose commit has this workflow starts a run, which fails at the PyPI check and uploads nothing. A tag older than the Release trigger (such as `protocol-v0.9.0`) starts no run.
+2. Run the workflow by hand from `main` with the tag and **attach_only** ticked:
+
+   ```sh
+   gh workflow run protocol-release.yml --ref main \
+     -f tag=protocol-v0.9.0 -f attach_only=true
+   ```
+
+   It downloads that version's files from PyPI, checks each sha256 against PyPI's JSON API, smoke-tests the wheel, then signs the files and attaches them to the Release. It builds nothing and uploads nothing to PyPI.
