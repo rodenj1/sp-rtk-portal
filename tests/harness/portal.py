@@ -52,6 +52,7 @@ def test_settings(
         recovery_flow_slug=authentik.recovery_flow_slug,
         totp_setup_flow_slug=authentik.totp_setup_flow_slug,
         password_change_flow_slug=authentik.password_change_flow_slug,
+        unenrollment_flow_slug=authentik.unenrollment_flow_slug,
         authentik_api_token=authentik.api_token,
         turnstile_site_key=authentik.turnstile_site_key,
         oidc_app_slug=authentik.app_slug,

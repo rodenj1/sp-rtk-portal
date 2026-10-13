@@ -25,6 +25,7 @@ class Settings:
     recovery_flow_slug: str = "portal-recovery"
     totp_setup_flow_slug: str = "portal-totp-setup"
     password_change_flow_slug: str = "portal-password-change"
+    unenrollment_flow_slug: str = "portal-unenrollment"
     oidc_app_slug: str = "sp-rtk-portal"
     session_lifetime: timedelta = timedelta(days=30)
     login_attempt_lifetime: timedelta = timedelta(minutes=10)
@@ -122,6 +123,7 @@ class Settings:
             **opt("recovery_flow_slug"),
             **opt("totp_setup_flow_slug"),
             **opt("password_change_flow_slug"),
+            **opt("unenrollment_flow_slug"),
             **opt("oidc_app_slug"),
             **opt("smtp_host"),
             **opt("smtp_username"),

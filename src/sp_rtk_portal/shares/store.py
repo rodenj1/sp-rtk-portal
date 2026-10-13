@@ -48,9 +48,11 @@ async def lock_base(conn: Connection, base_id: str) -> Target | None:
 
 async def verified_account(conn: Connection, email: str) -> int | None:
     """The account whose verified email is ``email`` (the latest to sign in,
-    should two Authentik users share one address)."""
+    should two Authentik users share one address). Never a deleted one: a
+    new sign-up with that email is a new account."""
     cur = await conn.execute(
         "SELECT id FROM account WHERE lower(email) = %s AND email_verified"
+        " AND deleted_at IS NULL"
         " ORDER BY last_login_at DESC LIMIT 1",
         (email,),
     )

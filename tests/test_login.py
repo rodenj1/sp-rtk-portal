@@ -159,6 +159,20 @@ async def test_an_unknown_stage_after_the_totp_code_fails_closed(
     _assert_failed_closed(resp)
 
 
+async def test_authentik_redirecting_anywhere_but_its_executor_fails_closed(
+    browser: Browser, authentik: FakeAuthentik
+):
+    """Between stages Authentik redirects back to its executor, which the
+    Portal follows (every sign-in above does). Anywhere else it doesn't."""
+    authentik.add_user(EMAIL, PASSWORD)
+    authentik.script_redirect("https://evil.example/api/v3/flows/executor/x/")
+
+    resp = await browser.sign_in(EMAIL, PASSWORD)
+
+    _assert_failed_closed(resp)
+    assert [m for m, _ in authentik.executor_calls] == ["GET", "POST"]
+
+
 def _identification() -> dict:
     return {
         "component": "ak-stage-identification",

@@ -32,6 +32,8 @@ PENDING_SHARE_REMOVED = "pending_share_removed"
 POSSIBLE_COPY = "possible_copy"
 LOG_OUT_EVERYWHERE = "log_out_everywhere"
 ACCOUNT_DELETED = "account_deleted"
+# The Portal's data is deleted, but Authentik's user delete didn't happen.
+ACCOUNT_DELETION_INCOMPLETE = "account_deletion_incomplete"
 
 
 async def record(
