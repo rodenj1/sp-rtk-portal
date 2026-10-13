@@ -38,6 +38,12 @@ Configuration is read from the environment:
 | `PORTAL_SMTP_HOST`, `PORTAL_SMTP_PORT`, `PORTAL_SMTP_USERNAME`, `PORTAL_SMTP_PASSWORD`, `PORTAL_SMTP_FROM` | The SMTP server Authentik uses, for the Portal's own email (Share notifications). Port default 587, STARTTLS unless `PORTAL_SMTP_STARTTLS=false`. No host: nothing is sent (logged) |
 | `PORTAL_MAX_SHARED_USERS_PER_BASE`, `PORTAL_MAX_PENDING_SHARES_PER_BASE` | Share limits per base, default 20 and 10 |
 | `PORTAL_DOORBELL_TOKEN` | The Doorbell server's bearer token for `/doorbell/*`. Unset (v1, no Doorbell server): those paths answer 404 |
+| `PORTAL_TRUSTED_PROXIES` | Comma-separated networks (CIDR) of the `cloudflared` pods, e.g. `10.244.0.0/16`. `CF-Connecting-IP` is believed only on a request whose peer is in one; any other request has no client IP (per-IP rate limits count it with every other such request, possible-copy detection ignores it, audit entries record no IP). Unset: nothing is trusted. A bad value stops startup |
+| `PORTAL_AGENT_MIN_SPACING`, `PORTAL_AGENT_BURST` | A poll or Check-in sooner than this fraction of its interval after the last gets 429 with `Retry-After` once this many early ones are spent. Default 0.5 and 3 |
+| `PORTAL_CLAIM_STARTS_PER_IP` | Claim starts an hour per public IP, default 10 (429 past it) |
+| `PORTAL_WRONG_CODES_PER_ACCOUNT`, `PORTAL_WRONG_CODES_OVERALL` | Wrong approve codes an hour per account, default 10, and across all accounts, default 100. Past either, no code is looked up (also on `/claim?code=`) |
+| `PORTAL_SHARES_PER_OPERATOR` | Shares an hour per Operator, default 30 (each emails someone) |
+| `PORTAL_TUNNEL_REFUSALS_PER_IP` | Refused tunnel opens an hour per IP, default 30; past it, opens from that IP are refused unread |
 | `PORTAL_HOST`, `PORTAL_PORT`, `PORTAL_LOG_LEVEL` | Default `0.0.0.0`, `8000`, `INFO` |
 
 ```sh
@@ -91,6 +97,12 @@ An Operator Un-claims a base on the Portal (`POST /bases/<id>/unclaim`, the list
 ## Shares
 
 An Operator Shares a base by email on its Shares page (`/bases/<id>/shares`, linked from the list). An account with that verified email gets a Share at once; otherwise a Pending share waits 14 days and becomes a Share on the first login with that verified email (bound to the account, i.e. its `(iss, sub)`). The recipient and the base's Operator are both emailed every time, even when the Operator made the Share. A Shared user sees the base in their list marked Shared and opens it like the Operator, but gets 403 on Share and 404 on the Shares page and Un-claim. The Operator removes a Shared user (`POST /bases/<id>/shares/<account>/remove`) or withdraws a Pending share; a Shared user leaves (`POST /bases/<id>/leave`). Removing or leaving ends that user's Remote sessions on the base at once, revoking their `/b/` token. Un-claim removes all of the base's Shares. Limits: 20 Shared users and 10 live Pending shares per base. Every Share change is audited. The code is in `src/sp_rtk_portal/shares/` and email in `src/sp_rtk_portal/mail.py`.
+
+## Rate limits and possible copy
+
+Limits (see the `PORTAL_*` settings above) are counted in the Portal process's memory: one replica, so a restart forgets them and only ever lets a little more through. A refused agent request gets 429 with `Retry-After` and an `ErrorReply("slow_down")`; the agent waits that long (at least twice its poll interval for a poll). A refused browser action gets 429 with `{"error": "... Try again in N minutes."}`.
+
+A base key seen from two public IPs in turns (A, B, A) within 5 minutes, by polls, Check-ins or Doorbell keepalives, marks the base "possible copy" on the base list and emails its Operator once (audit kind `possible_copy`). Nothing is blocked; the flag stays until the base is Un-claimed (Claiming again gives it a new key). A dual-stack base that alternates between IPv4 and IPv6 would look the same.
 
 ## Container image
 
