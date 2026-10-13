@@ -39,7 +39,7 @@ Configuration is read from the environment:
 | `PORTAL_SMTP_HOST`, `PORTAL_SMTP_PORT`, `PORTAL_SMTP_USERNAME`, `PORTAL_SMTP_PASSWORD`, `PORTAL_SMTP_FROM` | The SMTP server Authentik uses, for the Portal's own email (Share notifications). Port default 587, STARTTLS unless `PORTAL_SMTP_STARTTLS=false`. No host: nothing is sent (logged) |
 | `PORTAL_MAX_SHARED_USERS_PER_BASE`, `PORTAL_MAX_PENDING_SHARES_PER_BASE` | Share limits per base, default 20 and 10 |
 | `PORTAL_DOORBELL_TOKEN` | The Doorbell server's bearer token for `/doorbell/*`. Unset (v1, no Doorbell server): those paths answer 404 |
-| `PORTAL_TRUSTED_PROXIES` | Comma-separated networks (CIDR) of the `cloudflared` pods, e.g. `10.244.0.0/16`. `CF-Connecting-IP` is believed only on a request whose peer is in one; any other request has no client IP (per-IP rate limits count it with every other such request, possible-copy detection ignores it, audit entries record no IP). **Required**: unset or empty stops startup, since every request would then share one IP (fleet-wide rate limits, no possible-copy detection). `none` trusts nothing on purpose (development only). A bad value stops startup |
+| `PORTAL_TRUSTED_PROXIES` | Comma-separated networks (CIDR) of the proxies in front of the Portal (the `cloudflared` and Traefik pods), e.g. `10.244.0.0/16`. Client-IP headers are believed only on a request whose peer is in one (see [Client IP](#client-ip)); any other request has no client IP (per-IP rate limits count it with every other such request, possible-copy detection ignores it, audit entries record no IP). **Required**: unset or empty stops startup, since every request would then share one IP (fleet-wide rate limits, no possible-copy detection). `none` trusts nothing on purpose (development only). A bad value stops startup |
 | `PORTAL_AGENT_MIN_SPACING`, `PORTAL_AGENT_BURST` | A poll or Check-in sooner than this fraction of its interval after the last gets 429 with `Retry-After` once this many early ones are spent. Default 0.5 and 3 |
 | `PORTAL_CLAIM_STARTS_PER_IP` | Claim starts an hour per public IP, default 10 (429 past it) |
 | `PORTAL_WRONG_CODES_PER_ACCOUNT`, `PORTAL_WRONG_CODES_OVERALL` | Wrong approve codes an hour per account, default 10, and across all accounts, default 100. Past either, no code is looked up (also on `/claim?code=`) |
@@ -105,6 +105,16 @@ An Operator on site can pause remote access from the base's local Portal page. T
 ## Shares
 
 An Operator Shares a base by email on its Shares page (`/bases/<id>/shares`, linked from the list). An account with that verified email gets a Share at once; otherwise a Pending share waits 14 days and becomes a Share on the first login with that verified email (bound to the account, i.e. its `(iss, sub)`). The recipient and the base's Operator are both emailed every time, even when the Operator made the Share. A Shared user sees the base in their list marked Shared and opens it like the Operator, but gets 403 on Share and 404 on the Shares page and Un-claim. The Operator removes a Shared user (`POST /bases/<id>/shares/<account>/remove`) or withdraws a Pending share; a Shared user leaves (`POST /bases/<id>/leave`). Removing or leaving ends that user's Remote sessions on the base at once, revoking their `/b/` token. Un-claim removes all of the base's Shares. Limits: 20 Shared users and 10 live Pending shares per base. Every Share change is audited. The code is in `src/sp_rtk_portal/shares/` and email in `src/sp_rtk_portal/mail.py`.
+
+## Client IP
+
+The Portal is reached two ways: from the internet through Cloudflare and `cloudflared`, and from the LAN through Traefik's LAN-only `websecure` entrypoint. On a request whose peer is in `PORTAL_TRUSTED_PROXIES`, the client IP is:
+
+1. `CF-Connecting-IP`, if it is a valid IP (Cloudflare sets it);
+2. otherwise `X-Real-Ip`, if it is a valid IP (Traefik's `websecure` trusts no forwarded headers, so it sets this to the LAN client's address; the LAN route also strips any `CF-Connecting-IP` the client sent);
+3. otherwise none.
+
+A request from any other peer has no client IP, whatever headers it carries. The peer address itself is never used: it is the proxy's. The code is in `src/sp_rtk_portal/web/client_ip.py`; the cluster side is in homelab-talos `docs/SP_RTK_PORTAL_DEPLOYMENT.md`.
 
 ## Rate limits and possible copy
 
