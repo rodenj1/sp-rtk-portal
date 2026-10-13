@@ -194,9 +194,12 @@ DOORBELL_IGNORED = "ignored"
 """The configured host didn't resolve, or resolved to a private, loopback or
 link-local address: the agent ignores it and polls."""
 DOORBELL_UNAVAILABLE = "unavailable"
-"""A usable host is configured but this agent can't ring it (yet): it polls."""
+"""A usable host is configured and the agent sends keepalives to it, but the
+Portal hasn't heard them lately (or the agent predates the Doorbell): it
+polls."""
 DOORBELL_OK = "ok"
-"""The Doorbell answers: the base is woken by it (wake mode Doorbell)."""
+"""The Portal hears the base's keepalives: the base is woken by a ring (wake
+mode Doorbell) and stops polling."""
 
 
 @dataclass(frozen=True)
@@ -293,6 +296,12 @@ class CheckInReply(Message):
     config: AgentConfig
     metered: bool = False
     notices: list[Notice] = dataclasses.field(default_factory=list)
+    doorbell_heard: bool = False
+    """The Portal has heard this base's Doorbell keepalives lately (through
+    the Doorbell server): the agent may stop polling and rely on rings."""
+    ring_key: str | None = None
+    """The base's ring key (base64url), when the agent config names a
+    Doorbell host: rings are authenticated with it (see :mod:`.doorbell`)."""
 
 
 @dataclass(frozen=True)
