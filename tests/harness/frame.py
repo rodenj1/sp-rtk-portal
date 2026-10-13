@@ -89,12 +89,21 @@ class Recorder:
                 seen.response_headers = _headers(message.get("headers", []))
             elif kind == "websocket.accept":
                 seen.status = 101
+            elif kind == "websocket.close" and seen.status is None:
+                seen.status = 403  # closed before accepting: the server says 403
             await send(message)
 
         await self.app(scope, receive, recording)
 
     def to(self, path: str) -> list[Seen]:
         return [s for s in self.seen if s.path == path]
+
+    def mark(self) -> int:
+        """Where the record is now: ``since(mark)`` is what came after."""
+        return len(self.seen)
+
+    def since(self, mark: int) -> list[Seen]:
+        return self.seen[mark:]
 
 
 @dataclass

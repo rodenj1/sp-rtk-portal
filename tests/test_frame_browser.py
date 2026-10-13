@@ -109,6 +109,9 @@ async def test_every_base_page_renders_in_the_frame_as_it_does_directly(
     remote: Remote, engine: Browser, sp_rtk_base: RealBase
 ):
     frame = await remote.connected()
+    await expect(remote.page.locator("[data-field=frame-label]")).to_contain_text(
+        "served by the base"
+    )
     width, height = await frame.evaluate("() => [innerWidth, innerHeight]")
     direct = await engine.new_page(viewport={"width": width, "height": height})
 
@@ -209,3 +212,189 @@ async def test_a_base_download_arrives_as_a_file(remote: Remote, sp_rtk_base: Re
         assert download.suggested_filename == f"{name}.json"
         path = await download.path()
         assert json.loads(path.read_text())["name"] == name
+
+
+# --- Isolation ------------------------------------------------------------------------
+
+# What a framed page tries against the Portal page around it and the user.
+REACH = r"""async (portal) => {
+  const out = {};
+  const probe = async (name, fn) => {
+    try { out[name] = await fn(); } catch (e) { out[name] = "threw " + e.name; }
+  };
+  await probe("origin", () => self.origin);
+  await probe("parent DOM", () => parent.document.title);
+  await probe("top.location", () => top.location.href);
+  await probe("document.cookie", () => document.cookie);
+  await probe("IndexedDB", () => new Promise((opened, failed) => {
+    const req = indexedDB.open("probe");
+    req.onsuccess = () => opened("opened");
+    req.onerror = () => failed(req.error);
+  }));
+  await probe("window.open", () =>
+    window.open(portal + "/account") === null ? "blocked" : "opened");
+  await probe("top navigation", () => {
+    top.location.href = portal + "/account";
+    return "navigated";
+  });
+  return out;
+}"""
+
+NOWHERE = {
+    "origin": "null",
+    "parent DOM": "threw SecurityError",
+    "top.location": "threw SecurityError",
+    "IndexedDB": "threw SecurityError",
+    "top navigation": "threw SecurityError",
+}
+
+
+def _assert_shut_out(reached: dict[str, str], *, empty_jar: bool = False) -> None:
+    """``empty_jar``: an empty ``document.cookie`` is as good as a throw."""
+    # Chromium and WebKit answer window.open with null, Firefox throws.
+    assert reached.pop("window.open") in ("blocked", "threw InvalidAccessError")
+    cookie = reached.pop("document.cookie")
+    assert cookie in (
+        ("threw SecurityError", "") if empty_jar else ("threw SecurityError",)
+    )
+    assert reached == NOWHERE
+
+
+async def test_a_framed_page_cannot_reach_the_portal_page_or_the_user(remote: Remote):
+    frame = await remote.connected()
+    bar = remote.page.url
+    context = remote.page.context
+    assert "__Host-portal_session" in {c["name"] for c in await context.cookies()}
+
+    reached = await frame.evaluate(REACH, remote.origin)
+
+    _assert_shut_out(reached)
+    await asyncio.sleep(1)  # a navigation or popup would have begun by now
+    assert remote.page.url == bar
+    assert context.pages == [remote.page]
+
+
+# Requests a framed page sends to the Portal's own paths, as the user if it
+# could: a credentialed read, a simple POST (no preflight), a JSON action
+# (preflighted), the Session bar's status channel, and a form POST.
+SEND = r"""async ({portal, base}) => {
+  const quietly = (p) => p.catch(() => null);
+  await quietly(fetch(portal + "/account", {credentials: "include"}));
+  await quietly(fetch(portal + "/bases/" + base + "/metered", {
+    method: "POST", mode: "no-cors", credentials: "include",
+    body: JSON.stringify({metered: "true"}),
+  }));
+  await quietly(fetch(portal + "/bases/" + base + "/remote", {
+    method: "POST", credentials: "include",
+    headers: {"Content-Type": "application/json", "X-Portal-Action": "1"},
+    body: "{}",
+  }));
+  await new Promise((done) => {
+    const ws = new WebSocket(portal.replace("https:", "wss:") + "/bases/" + base + "/session");
+    ws.onclose = ws.onerror = () => done();
+    setTimeout(done, 3000);
+  });
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = portal + "/bases/" + base + "/metered";
+  const field = document.createElement("input");
+  field.name = "metered";
+  field.value = "true";
+  form.appendChild(field);
+  document.body.appendChild(form);
+  form.submit();
+}"""
+
+
+async def test_the_portal_refuses_every_request_a_framed_page_makes_as_the_user(
+    remote: Remote, engine: Browser
+):
+    frame = await remote.connected()
+    mark = remote.requests.mark()
+
+    await frame.evaluate(SEND, {"portal": remote.origin, "base": remote.base_id})
+    await asyncio.sleep(2)  # the form POST's navigation
+
+    sent = [s for s in remote.requests.since(mark) if not s.path.startswith("/b/")]
+    base = f"/bases/{remote.base_id}"
+    assert sorted((s.method, s.path) for s in sent) == sorted(
+        [
+            ("GET", "/account"),
+            ("POST", f"{base}/metered"),  # the no-cors fetch
+            ("OPTIONS", f"{base}/remote"),  # the JSON action's preflight, refused,
+            ("GET", f"{base}/session"),  # so the action itself is never sent
+            ("POST", f"{base}/metered"),  # the form
+        ]
+    )
+    for seen in sent:
+        assert seen.headers.get("origin") == "null", seen
+        assert seen.status == 403, seen
+        if engine.browser_type.name != "webkit":
+            assert "cookie" not in seen.headers, seen
+        # WebKit sends the Portal's SameSite=Lax cookie with them (it treats
+        # the sandboxed frame as same-site for cookies, while marking the
+        # requests Sec-Fetch-Site: cross-site), which is why the Portal
+        # refuses cross-site reads too. Safari: README launch checklist.
+    await expect(remote.page.locator("[data-field=status]")).to_have_text("Connected")
+
+
+async def test_each_isolation_layer_holds_on_its_own(remote: Remote):
+    """The iframe's sandbox attribute and the proxy's ``CSP: sandbox`` header:
+    either one alone keeps a base page in an opaque origin."""
+    await remote.connected()
+    path = await remote.frame_path()
+
+    # Both are there.
+    iframe = remote.page.locator("iframe[data-field=frame]")
+    assert await iframe.get_attribute("sandbox") == SANDBOX
+    answers = [  # (a request the browser gave up on has no answer)
+        s
+        for s in remote.requests.seen
+        if s.path.startswith("/b/") and s.kind == "http" and s.status is not None
+    ]
+    assert len(answers) > 10  # the page, its scripts, styles, fonts ...
+    for seen in answers:
+        csp = seen.response_headers.get("content-security-policy", "")
+        assert csp.startswith(f"sandbox {SANDBOX};"), seen
+
+    # The header alone: a Session bar that forgot the attribute.
+    bare = await _frame_without_sandbox(remote.page, path)
+    _assert_shut_out(await bare.evaluate(REACH, remote.origin))
+
+    # The attribute alone: the frame shows a document of its own making, which
+    # never passed through the proxy (no header).
+    frame = await remote.frame()
+    await frame.evaluate(
+        """() => location.assign(URL.createObjectURL(new Blob(
+            ["<p>made here</p>"], {type: "text/html"})))"""
+    )
+    await expect(remote.base.get_by_text("made here")).to_be_visible()
+    own = await remote.frame()
+    # WebKit gives such a document an empty cookie jar instead of throwing.
+    _assert_shut_out(await own.evaluate(REACH, remote.origin), empty_jar=True)
+
+    # And a base page loaded on its own, outside any frame, is refused.
+    elsewhere = await remote.page.context.new_page()
+    resp = await elsewhere.goto(remote.origin + path)
+    assert resp is not None
+    assert resp.status == 403
+    assert (await resp.all_headers())["content-security-policy"].startswith(
+        f"sandbox {SANDBOX};"
+    )
+
+
+async def _frame_without_sandbox(page: Page, path: str) -> Frame:
+    handle = await page.evaluate_handle(
+        """(path) => new Promise((loaded) => {
+            const iframe = document.createElement("iframe");
+            iframe.onload = () => loaded(iframe);
+            iframe.src = path;
+            document.body.appendChild(iframe);
+        })""",
+        path,
+    )
+    element = handle.as_element()
+    assert element is not None
+    frame = await element.content_frame()
+    assert frame is not None
+    return frame
