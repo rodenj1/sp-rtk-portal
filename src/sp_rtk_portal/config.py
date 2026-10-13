@@ -40,6 +40,8 @@ class Settings:
     # Tunnel broker (ticket #88): how long a Wake's nonce may be redeemed,
     # and how often (seconds, real time) Remote session timeouts are checked.
     wake_lifetime: timedelta = timedelta(minutes=5)
+    # The Session bar asks "Still there?" this long before the hard cap (#90).
+    still_there_warning: timedelta = timedelta(minutes=5)
     tunnel_sweep_interval: float = 1.0
 
     @property

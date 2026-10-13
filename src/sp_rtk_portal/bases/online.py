@@ -45,3 +45,11 @@ def state(base: BaseSummary, config: AgentConfig, now: datetime) -> State:
     if now - base.last_seen_at > offline_after(base, config):
         return "offline"
     return "online"
+
+
+def wake_mode(base: BaseSummary, config: AgentConfig) -> str:
+    """How a Wake reaches the base, in words."""
+    if base.doorbell == "ok":
+        return "Doorbell"
+    mode = f"Polling every {interval(config, base.metered)} s"
+    return mode + " (metered)" if base.metered else mode
