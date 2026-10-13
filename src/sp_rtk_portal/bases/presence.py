@@ -26,7 +26,7 @@ class Seen:
     owner_account_id: int | None = None
     paused: bool = False
     was_paused: bool = False
-    """Before this poll (a change is audited)."""
+    """Before this poll or Check-in (a change is audited)."""
     last_doorbell_at: datetime | None = None
 
 
@@ -93,12 +93,19 @@ async def checked_in(
     ip: str | None,
     check_in: CheckIn,
 ) -> Seen | None:
+    """A Check-in. Its ``paused`` (when the agent sends one) sets remote
+    access paused as a poll does."""
     cur = await conn.execute(
         "UPDATE base SET last_seen_at = %s, last_check_in_at = %s,"
         " protocol_version = %s, public_ip = coalesce(%s::inet, public_ip),"
         " needs_upgrade = false, polled_metered = metered,"
-        " software_version = %s, doorbell = %s, lan_addresses = %s"
-        " WHERE key_thumbprint = %s RETURNING id, metered, last_doorbell_at",
+        " software_version = %s, doorbell = %s, lan_addresses = %s,"
+        " remote_paused = coalesce(%s, remote_paused)"
+        " FROM (SELECT id AS old_id, remote_paused AS was_paused FROM base"
+        "       WHERE key_thumbprint = %s FOR UPDATE) AS old"
+        " WHERE base.id = old.old_id"
+        " RETURNING id, metered, last_doorbell_at, owner_account_id,"
+        " remote_paused, was_paused",
         (
             now,
             now,
@@ -107,13 +114,21 @@ async def checked_in(
             check_in.software_version,
             check_in.doorbell,
             json.dumps([a.to_json() for a in check_in.lan_addresses]),
+            check_in.paused,
             thumbprint,
         ),
     )
     row = await cur.fetchone()
     if row is None:
         return None
-    return Seen(row["id"], row["metered"], last_doorbell_at=row["last_doorbell_at"])
+    return Seen(
+        row["id"],
+        row["metered"],
+        owner_account_id=row["owner_account_id"],
+        paused=row["remote_paused"],
+        was_paused=row["was_paused"],
+        last_doorbell_at=row["last_doorbell_at"],
+    )
 
 
 @dataclass(frozen=True)

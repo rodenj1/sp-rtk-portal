@@ -145,3 +145,11 @@ def test_a_poll_reply_carries_the_live_remote_sessions():
 
 def test_an_older_portals_poll_reply_has_no_sessions():
     assert PollReply.from_json({"config": {"revision": 1}}).sessions == []
+
+
+def test_a_check_in_says_whether_remote_access_is_paused():
+    paused = CheckIn(software_version="0.11.0", paused=True)
+
+    assert CheckIn.from_json(paused.to_json()) == paused
+    # An agent from before the field existed says nothing either way.
+    assert CheckIn.from_json({"software_version": "0.11.0"}).paused is None

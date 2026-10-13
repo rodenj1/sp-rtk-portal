@@ -289,6 +289,10 @@ class CheckIn(Message):
     doorbell: str = DOORBELL_OFF
     """Doorbell health: one of the ``DOORBELL_*`` values."""
     lan_addresses: list[LanAddress] = dataclasses.field(default_factory=list)
+    paused: bool | None = None
+    """Remote access paused on site, as on a poll (``Poll.state``): a base
+    that rarely polls (Doorbell mode) still reports it. ``None``: an agent
+    from before this field, which says nothing either way."""
 
 
 @dataclass(frozen=True)

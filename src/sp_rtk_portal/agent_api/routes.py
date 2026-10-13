@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sp_rtk_portal_protocol import (
@@ -171,21 +173,11 @@ async def poll(
         )
         if seen is None:
             raise _unclaimed()
-        if seen.paused != seen.was_paused:
-            await audit.record(
-                conn,
-                at=now,
-                kind=audit.REMOTE_ACCESS_PAUSED
-                if paused
-                else audit.REMOTE_ACCESS_RESUMED,
-                base_id=seen.base_id,
-                ip=req.ip,
-            )
+        await _audit_pause(conn, seen, now, req.ip)
         notices = await agent_config.wire_notices(conn)
         sessions = [] if paused else await _live_sessions(conn, ctx, seen)
     if paused:
-        await ctx.tunnels.end_sessions(broker.PAUSED, base_id=seen.base_id)
-        await ctx.tunnels.close_tunnel(seen.base_id)
+        await _cut_paused(ctx, seen.base_id)
     return reply(
         PollReply(
             config=config,
@@ -195,6 +187,30 @@ async def poll(
             sessions=sessions,
         )
     )
+
+
+async def _audit_pause(
+    conn: Connection, seen: presence.Seen, now: datetime, ip: str | None
+) -> None:
+    """Audit a change of remote access paused, in the sign of life's
+    transaction."""
+    if seen.paused != seen.was_paused:
+        await audit.record(
+            conn,
+            at=now,
+            kind=audit.REMOTE_ACCESS_PAUSED
+            if seen.paused
+            else audit.REMOTE_ACCESS_RESUMED,
+            base_id=seen.base_id,
+            ip=ip,
+        )
+
+
+async def _cut_paused(ctx: PortalContext, base_id: str) -> None:
+    """Remote access is paused on site: its Remote sessions end and its
+    tunnel closes."""
+    await ctx.tunnels.end_sessions(broker.PAUSED, base_id=base_id)
+    await ctx.tunnels.close_tunnel(base_id)
 
 
 async def _live_sessions(
@@ -223,8 +239,9 @@ async def check_in(
     req: AgentRequest = Depends(agent_request),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
-    """The slow status report: versions, Doorbell health, LAN addresses. The
-    reply says whether the Portal hears the base's Doorbell, and gives it its
+    """The slow status report: versions, Doorbell health, LAN addresses and
+    (from protocol package 0.9) remote access paused, handled as on a poll.
+    The reply says whether the Portal hears the base's Doorbell, and gives it its
     ring key while the agent config names a Doorbell host."""
     msg = req.message(CheckIn)
     async with ctx.db.connection() as conn:
@@ -246,12 +263,15 @@ async def check_in(
         )
         if seen is None:
             raise _unclaimed()
+        await _audit_pause(conn, seen, now, req.ip)
         notices = await agent_config.wire_notices(conn)
         ring_key = (
             await presence.ring_key(conn, seen.base_id)
             if config.doorbell_host
             else None
         )
+    if msg.paused:
+        await _cut_paused(ctx, seen.base_id)
     heard = (
         seen.last_doorbell_at is not None
         and now - seen.last_doorbell_at <= online.DOORBELL_OFFLINE_AFTER

@@ -13,14 +13,16 @@ import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 
 import pytest
+from sp_rtk_portal_protocol import CHECK_IN_PATH, CheckIn
 
-from .harness.agent import RunningAgent, running_agent
+from .harness.agent import BASE_IP, RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
 from .harness.fake_authentik import FakeAuthentik
-from .harness.pages import base_card, fields
+from .harness.pages import base_card, entries, fields
 from .harness.portal import Browser, Portal
 from .harness.server import serving
 from .harness.session_bar import status_channel
+from .harness.signer import signing_agent
 
 EMAIL = "operator@example.com"
 PASSWORD = "correct horse battery staple"
@@ -101,6 +103,35 @@ async def test_a_paused_base_shows_remote_access_paused_and_cannot_be_opened(
     state, f = await card(operator, base_id)
     assert (state, f["state"]) == ("online", ["Online"])
     assert "open-remotely@disabled" not in f
+
+
+async def test_a_check_in_carries_the_pause_for_a_base_that_rarely_polls(
+    portal: Portal, operator: Browser, agent: RunningAgent
+):
+    """In Doorbell mode the agent polls only while its tunnel is open, so
+    its Check-ins say whether remote access is paused too."""
+    base_id = await base_of(agent)
+
+    async with signing_agent(portal, ip=BASE_IP) as base:
+
+        async def check_in(**fields: object) -> None:
+            portal.clock.advance(minutes=5)  # one Check-in interval later
+            body = CheckIn(software_version="0.11.0").to_json()
+            body.pop("paused")
+            resp = await base.post(CHECK_IN_PATH, body | fields, key=agent.key)
+            assert resp.status_code == 200, resp.text
+
+        await check_in(paused=True)
+        state, f = await card(operator, base_id)
+        assert (state, f["state"]) == ("paused", ["Remote access paused"])
+        whats = [e["what"] for e in entries((await operator.get("/audit")).text)]
+        assert "Remote access paused on the base" in whats
+
+        await check_in()  # an agent from before the field: no change
+        assert (await card(operator, base_id))[0] == "paused"
+
+        await check_in(paused=False)
+        assert (await card(operator, base_id))[0] == "online"
 
 
 async def test_a_paused_agent_opens_no_tunnel_for_a_wake_sent_anyway(
