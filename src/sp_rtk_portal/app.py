@@ -13,6 +13,7 @@ from sp_rtk_portal_protocol import ReplayCache
 from sp_rtk_portal import health
 from sp_rtk_portal.accounts import (
     account_page_routes,
+    security,
     security_routes,
     signup_routes,
 )
@@ -75,6 +76,7 @@ def create_app(
         doorbell=Doorbell(clock, tunnels),
     )
     ctx.base_events.on_unclaimed(sharing.unclaimed)
+    ctx.account_events.on_password_changed(security.LogOutEverywhere(ctx))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

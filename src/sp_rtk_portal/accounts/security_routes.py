@@ -20,9 +20,7 @@ async def logout_everywhere(
     account: Account = Depends(current_account),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
-    await security.log_out_everywhere(
-        ctx, account_id=account.id, ip=client_ip(request)
-    )
+    await security.log_out_everywhere(ctx, account_id=account.id, ip=client_ip(request))
     response = JSONResponse({"next": "/login"})
     sessions.clear_cookie(response)
     return response

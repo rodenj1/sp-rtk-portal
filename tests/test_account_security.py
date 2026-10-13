@@ -89,9 +89,10 @@ async def test_log_out_everywhere_ends_every_portal_and_remote_session(
     remote = await remote_session_token(portal, laptop, base_id)
     laptop_cookie = laptop.cookies[COOKIE]
     here_cookie = operator.cookies[COOKIE]
-    assert 'data-action="/account/logout-everywhere"' in (
-        await operator.get("/account")
-    ).text
+    assert (
+        'data-action="/account/logout-everywhere"'
+        in (await operator.get("/account")).text
+    )
 
     resp = await operator.action("/account/logout-everywhere")
 
@@ -114,3 +115,66 @@ async def test_log_out_everywhere_ends_every_portal_and_remote_session(
         "SELECT detail FROM audit_entry WHERE kind = 'remote_session_end'"
     )
     assert [e["detail"]["reason"] for e in ends] == ["log_out_everywhere"]
+
+
+async def request_recovery_link(browser: Browser, authentik: FakeAuthentik) -> str:
+    resp = await browser.action(
+        "/recover",
+        {"email": EMAIL, "cf-turnstile-response": authentik.turnstile_token},
+    )
+    assert resp.json() == {"next": "/recover/sent"}
+    return authentik.outbox[-1].link.split("t=", 1)[1]
+
+
+async def test_a_password_change_ends_every_other_session(
+    portal: Portal, operator: Browser, laptop: Browser, agent: RunningAgent
+):
+    base_id = await base_of(agent)
+    remote = await remote_session_token(portal, laptop, base_id)
+    laptop_cookie = laptop.cookies[COOKIE]
+
+    resp = await operator.action(
+        "/account/password",
+        {"current_password": PASSWORD, "password": NEW, "password_repeat": NEW},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert (await operator.get("/")).status_code == 200  # this one stays
+    await assert_signed_out(laptop, laptop_cookie)
+    await assert_token_refused(laptop, base_id, remote)
+    [entry] = await portal.query(
+        "SELECT account_id, detail FROM audit_entry WHERE kind = 'log_out_everywhere'"
+    )
+    assert entry == {
+        "account_id": await account_id(portal),
+        "detail": {"trigger": "password_change"},
+    }
+
+
+async def test_a_recovery_ends_every_session_but_the_recovering_one(
+    portal: Portal,
+    authentik: FakeAuthentik,
+    operator: Browser,
+    laptop: Browser,
+    agent: RunningAgent,
+):
+    base_id = await base_of(agent)
+    remote = await remote_session_token(portal, laptop, base_id)
+    cookies = {operator: operator.cookies[COOKIE], laptop: laptop.cookies[COOKIE]}
+
+    async with portal.browser(ip="192.0.2.50") as stranger:
+        token = await request_recovery_link(stranger, authentik)
+        resp = await stranger.action(
+            "/reset", {"t": token, "password": NEW, "password_repeat": NEW}
+        )
+        assert resp.status_code == 200, resp.text
+        assert (await stranger.get("/")).status_code == 200
+
+    for browser, cookie in cookies.items():
+        await assert_signed_out(browser, cookie)
+    await assert_token_refused(laptop, base_id, remote)
+    [entry] = await portal.query(
+        "SELECT host(ip) AS ip, detail FROM audit_entry"
+        " WHERE kind = 'log_out_everywhere'"
+    )
+    assert entry == {"ip": "192.0.2.50", "detail": {"trigger": "password_recovery"}}

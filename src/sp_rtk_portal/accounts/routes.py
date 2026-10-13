@@ -148,7 +148,7 @@ async def signed_in(
                 conn, at=now, kind=audit.PASSWORD_RECOVERY, account_id=account.id, ip=ip
             )
             await ctx.account_events.password_changed(
-                conn, PasswordChanged(account.id, now, events.RECOVERY, None)
+                conn, PasswordChanged(account.id, now, events.RECOVERY, None, ip)
             )
         token = await sessions.start(conn, account.id, now, lifetime)
         await audit.record(conn, at=now, kind=audit.LOGIN, account_id=account.id, ip=ip)

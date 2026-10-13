@@ -19,7 +19,8 @@ from sp_rtk_portal.db import Connection
 COOKIE = "__Host-portal_session"
 
 
-def _hash(token: str) -> bytes:
+def token_hash(token: str) -> bytes:
+    """What the database keeps of a session token."""
     return hashlib.sha256(token.encode()).digest()
 
 
@@ -30,7 +31,7 @@ async def start(
     await conn.execute(
         "INSERT INTO portal_session (token_hash, account_id, created_at,"
         " last_used_at, expires_at) VALUES (%s, %s, %s, %s, %s)",
-        (_hash(token), account_id, now, now, now + lifetime),
+        (token_hash(token), account_id, now, now, now + lifetime),
     )
     return token
 
@@ -44,7 +45,7 @@ async def resume(
         " FROM account a"
         " WHERE s.token_hash = %s AND s.expires_at > %s AND a.id = s.account_id"
         " RETURNING a.id, a.email, a.email_verified",
-        (now, now + lifetime, _hash(token), now),
+        (now, now + lifetime, token_hash(token), now),
     )
     row = await cur.fetchone()
     return Account(**row) if row else None
@@ -52,7 +53,7 @@ async def resume(
 
 async def end(conn: Connection, token: str) -> None:
     await conn.execute(
-        "DELETE FROM portal_session WHERE token_hash = %s", (_hash(token),)
+        "DELETE FROM portal_session WHERE token_hash = %s", (token_hash(token),)
     )
 
 

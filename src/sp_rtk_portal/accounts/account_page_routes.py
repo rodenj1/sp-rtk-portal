@@ -259,7 +259,11 @@ async def _password_outcome(
             await ctx.account_events.password_changed(
                 conn,
                 PasswordChanged(
-                    account.id, now, events.CHANGE, request.cookies.get(sessions.COOKIE)
+                    account.id,
+                    now,
+                    events.CHANGE,
+                    request.cookies.get(sessions.COOKIE),
+                    client_ip(request),
                 ),
             )
         response = JSONResponse({"next": "/account"})
