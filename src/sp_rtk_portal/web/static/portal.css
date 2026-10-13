@@ -68,3 +68,7 @@ body:has(.session-bar[data-fullscreen]) .topbar { display: none; }
 a.button { display: inline-block; padding: .5rem 1rem; border: 1px solid var(--accent); border-radius: .25rem; background: var(--accent); color: #fff; text-decoration: none; }
 .bases .local-here { color: #15803d; font-weight: 600; }
 .detect .hint { color: #888; font-size: .9rem; }
+table.audit { width: 100%; border-collapse: collapse; font-size: .9rem; }
+table.audit th, table.audit td { text-align: left; padding: .3rem .4rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+table.audit td:first-child { white-space: nowrap; }
+.pages a { margin-right: 1rem; }

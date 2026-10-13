@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block account %}{% include "_nav.html" %}{% endblock %}
+{% block main %}
+<h1>Audit log</h1>
+<p>Who did what with your bases, and what you did with your account, over the last {{ days }} days.
+Entries older than that are deleted. On bases Shared with you, you see only your own activity.</p>
+{% if entries %}
+<table class="audit">
+  <thead>
+    <tr><th>When (UTC)</th><th>What</th><th>Who</th><th>Base</th><th>IP</th></tr>
+  </thead>
+  <tbody>
+    {% for e in entries %}
+    <tr data-entry data-kind="{{ e.kind }}">
+      <td><time data-field="when" datetime="{{ e.at.isoformat() }}">{{ e.at | utc }} UTC</time></td>
+      <td data-field="what">{{ e.what }}</td>
+      <td data-field="who">{{ e.who }}</td>
+      <td data-field="base"{% if e.base_id %} title="{{ e.base_id }}"{% endif %}>{{ e.base }}</td>
+      <td data-field="ip">{{ e.ip }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+<p class="pages">
+  {% if page > 0 %}<a href="/audit{% if page > 1 %}?page={{ page - 1 }}{% endif %}" data-field="newer">Newer entries</a>{% endif %}
+  {% if more %}<a href="/audit?page={{ page + 1 }}" data-field="older">Older entries</a>{% endif %}
+</p>
+{% else %}
+<p class="empty">No entries in the last {{ days }} days.</p>
+{% endif %}
+{% endblock %}

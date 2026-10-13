@@ -73,3 +73,50 @@ def base_card(html: str, base_id: str) -> dict[str, list[str]]:
 
 def fields(html: str) -> dict[str, list[str]]:
     return _parse(html, None)
+
+
+class _Rows(HTMLParser):
+    """Each element carrying ``data-entry`` is one row of ``data-field``s."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._level = 0
+        self._row_level = 0
+        self._open: list[tuple[str, int]] = []
+        self.rows: list[dict[str, str]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in VOID:
+            return
+        a = dict(attrs)
+        self._level += 1
+        if "data-entry" in a:
+            self._row_level = self._level
+            self.rows.append({"@" + k: v or "" for k, v in attrs if k != "data-entry"})
+        elif self._row_level and "data-field" in a:
+            field = a["data-field"] or ""
+            self.rows[-1][field] = ""
+            self._open.append((field, self._level))
+            if "datetime" in a:
+                self.rows[-1][f"{field}@datetime"] = a["datetime"] or ""
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in VOID:
+            return
+        while self._open and self._open[-1][1] >= self._level:
+            self._open.pop()
+        if self._row_level == self._level:
+            self._row_level = 0
+        self._level -= 1
+
+    def handle_data(self, data: str) -> None:
+        for field, _ in self._open:
+            self.rows[-1][field] += data
+
+
+def entries(html: str) -> list[dict[str, str]]:
+    """The rows of a list page (the audit log): one dict per ``data-entry``
+    element, ``{field: text}`` plus its other attributes as ``@name``."""
+    parser = _Rows()
+    parser.feed(html)
+    return [{k: " ".join(v.split()) for k, v in row.items()} for row in parser.rows]

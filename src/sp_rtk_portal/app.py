@@ -30,6 +30,7 @@ from sp_rtk_portal.accounts.events import AccountEvents
 from sp_rtk_portal.agent_api import routes as agent_routes
 from sp_rtk_portal.agent_api import settings_routes
 from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
+from sp_rtk_portal.audit import routes as audit_routes
 from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock, SystemClock
@@ -116,6 +117,7 @@ def create_app(
     app.include_router(tunnel_routes.router)
     app.include_router(share_routes.router)
     app.include_router(doorbell_routes.router)
+    app.include_router(audit_routes.router)
     return app
 
 
