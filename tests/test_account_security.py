@@ -14,6 +14,7 @@ import pytest
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
+from .harness.pages import base_card
 from .harness.portal import Browser, Portal
 
 EMAIL = "operator@example.com"
@@ -267,3 +268,35 @@ async def test_the_review_can_be_skipped_and_returns_at_each_login_until_seen(
 
     async with portal.browser() as later:
         assert (await later.sign_in(EMAIL, NEW)).json() == {"next": "/"}
+
+
+# --- Email change -------------------------------------------------------------------
+
+
+async def test_an_email_changed_in_authentik_shows_at_next_login_and_keeps_bases_and_shares(
+    portal: Portal, authentik: FakeAuthentik, operator: Browser, agent: RunningAgent
+):
+    base_id = await base_of(agent)
+    await signed_in_user(portal, COLLEAGUE)
+    resp = await operator.action(f"/bases/{base_id}/shares", {"email": COLLEAGUE})
+    assert resp.status_code == 200, resp.text
+
+    authentik.change_email(authentik.users[EMAIL], "operator@new.example")
+    authentik.change_email(authentik.users[COLLEAGUE], "sam@new.example")
+
+    async with portal.browser() as b:
+        assert (await b.sign_in("operator@new.example", PASSWORD)).json() == {
+            "next": "/"
+        }
+        assert "operator@new.example" in (await b.get("/account")).text
+        assert base_card((await b.get("/")).text, base_id)
+        shares = (await b.get(f"/bases/{base_id}/shares")).text
+        assert "sam@example.com" in shares  # until Sam signs in again
+    async with portal.browser() as b:
+        assert (await b.sign_in("sam@new.example", PASSWORD)).json() == {"next": "/"}
+        assert base_card((await b.get("/")).text, base_id)
+    async with portal.browser() as b:
+        assert (await b.sign_in("operator@new.example", PASSWORD)).status_code == 200
+        shares = (await b.get(f"/bases/{base_id}/shares")).text
+        assert "sam@new.example" in shares
+    assert len(await portal.query("SELECT id FROM account")) == 2
