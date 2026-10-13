@@ -41,6 +41,9 @@ class Settings:
     # and how often (seconds, real time) Remote session timeouts are checked.
     wake_lifetime: timedelta = timedelta(minutes=5)
     tunnel_sweep_interval: float = 1.0
+    # The Doorbell server's bearer token for /doorbell/* (ticket #100). Empty
+    # (the default, v1 has no Doorbell server): that interface answers 404.
+    doorbell_token: str = ""
 
     @property
     def oidc_issuer(self) -> str:
@@ -74,6 +77,7 @@ class Settings:
             **opt("totp_setup_flow_slug"),
             **opt("password_change_flow_slug"),
             **opt("oidc_app_slug"),
+            **opt("doorbell_token"),
             **{
                 name: int(env[f"PORTAL_{name.upper()}"])
                 for name in ("max_bases_per_account", "min_protocol_version")

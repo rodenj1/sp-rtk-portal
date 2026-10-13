@@ -23,6 +23,7 @@ from sp_rtk_portal.config import Settings
 from sp_rtk_portal.web.security import ACTION_HEADER
 
 from .clock import FakeClock
+from .doorbell_server import DOORBELL_TOKEN
 from .fake_authentik import FakeAuthentik
 
 ORIGIN = "https://sp-rtk-base.big-spray.com"
@@ -48,6 +49,7 @@ def test_settings(database_url: str, authentik: FakeAuthentik) -> Settings:
         oidc_client_secret=authentik.client_secret,
         owner_emails=(PORTAL_OWNER,),
         tunnel_sweep_interval=0.01,
+        doorbell_token=DOORBELL_TOKEN,
     )
 
 

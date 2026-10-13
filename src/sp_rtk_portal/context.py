@@ -18,6 +18,7 @@ from sp_rtk_portal.accounts.events import AccountEvents
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
+from sp_rtk_portal.doorbell.bell import Doorbell
 from sp_rtk_portal.tunnel.broker import TunnelBroker
 
 
@@ -36,6 +37,8 @@ class PortalContext:
     agent_proofs: ReplayCache
     # Wakes, tunnels and Remote sessions (process-local: one instance).
     tunnels: TunnelBroker
+    # Doorbell return paths and rings (process-local too).
+    doorbell: Doorbell
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:
