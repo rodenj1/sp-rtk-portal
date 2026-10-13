@@ -65,8 +65,9 @@ class Settings:
     # Local access (ticket #97): the port of a base's own UI on its LAN.
     # Always 8080 in production; browser tests point it at a test server.
     base_ui_port: int = 8080
-    # Client IP (ticket #98): CF-Connecting-IP is believed only on requests
-    # whose peer is in one of these networks (the cloudflared pods). Empty:
+    # Client IP (ticket #98): CF-Connecting-IP, else X-Real-Ip, is believed
+    # only on requests whose peer is in one of these networks (the cloudflared
+    # and Traefik pods). Empty:
     # never believed, every request is untrusted (no client IP). From the
     # environment it must be set: ``none`` asks for empty on purpose.
     trusted_proxies: tuple[str, ...] = ()
@@ -174,7 +175,7 @@ class TrustedProxiesUnset(ValueError):
 
 
 def _trusted_proxies(env: dict[str, str]) -> tuple[str, ...]:
-    """The cloudflared networks. Unset is refused: every request would then
+    """The networks of the proxies in front of the Portal. Unset is refused: every request would then
     share one "untrusted" client IP, so per-IP limits would hit the whole
     fleet at once and possible-copy detection would be off. ``none`` says
     "no client IPs, I know" (development)."""
@@ -184,7 +185,7 @@ def _trusted_proxies(env: dict[str, str]) -> tuple[str, ...]:
     networks = tuple(n.strip() for n in raw.split(",") if n.strip())
     if not networks:
         raise TrustedProxiesUnset(
-            "PORTAL_TRUSTED_PROXIES must be set: the cloudflared pods' "
+            "PORTAL_TRUSTED_PROXIES must be set: the proxy pods' "
             "networks (e.g. 10.244.0.0/16), or 'none' for no client IPs"
         )
     return networks
