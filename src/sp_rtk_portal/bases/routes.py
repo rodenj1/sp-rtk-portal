@@ -11,9 +11,10 @@ from pydantic import BaseModel
 from sp_rtk_portal.accounts.deps import current_account
 from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.agent_api import config as agent_config
-from sp_rtk_portal.bases import claims, online, store
+from sp_rtk_portal.bases import claims, local, online, store
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.web.client_ip import client_ip
+from sp_rtk_portal.web.security import allow_connect
 from sp_rtk_portal.web.templates import render
 
 router = APIRouter()
@@ -31,6 +32,7 @@ async def base_list(
         notices = await agent_config.notices(conn)
         latest = await agent_config.latest_release(conn)
     now = ctx.clock.now()
+    ip = client_ip(request)
     cards = [
         BaseCard(
             base=base,
@@ -40,9 +42,19 @@ async def base_list(
             update=latest
             if agent_config.update_available(base.software_version, latest)
             else None,
+            local_access=local.local_access(
+                base.lan_addresses,
+                base.public_ip,
+                ip,
+                port=ctx.settings.base_ui_port,
+            ),
         )
         for base in bases
     ]
+    allow_connect(
+        request,
+        sorted({c.local_access.identity_url for c in cards if c.local_access}),
+    )
     return render(
         request,
         "bases.html",
@@ -63,6 +75,8 @@ class BaseCard:
     poll_interval: int
     update: str | None
     """A newer sp-rtk-base release, shown as information."""
+    local_access: local.LocalAccess | None = None
+    """Open locally, when the base reported a LAN address."""
 
 
 class Metered(BaseModel):
