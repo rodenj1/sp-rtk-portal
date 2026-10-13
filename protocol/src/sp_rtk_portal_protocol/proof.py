@@ -116,6 +116,10 @@ class BaseKey:
             serialization.NoEncryption(),
         )
 
+    def sign(self, data: bytes) -> bytes:
+        """A raw Ed25519 signature of ``data`` (a Doorbell keepalive's)."""
+        return self._key.sign(data)
+
     def proof(
         self,
         method: str,

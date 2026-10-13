@@ -56,6 +56,9 @@ class Settings:
     max_shared_users_per_base: int = 20
     max_pending_shares_per_base: int = 10
     pending_share_lifetime: timedelta = timedelta(days=14)
+    # The Doorbell server's bearer token for /doorbell/* (ticket #100). Empty
+    # (the default, v1 has no Doorbell server): that interface answers 404.
+    doorbell_token: str = ""
     # Local access (ticket #97): the port of a base's own UI on its LAN.
     # Always 8080 in production; browser tests point it at a test server.
     base_ui_port: int = 8080
@@ -96,6 +99,7 @@ class Settings:
             **opt("smtp_username"),
             **opt("smtp_password"),
             **opt("smtp_from"),
+            **opt("doorbell_token"),
             **{
                 name: int(env[f"PORTAL_{name.upper()}"])
                 for name in (

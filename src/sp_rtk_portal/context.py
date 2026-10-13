@@ -19,6 +19,7 @@ from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
+from sp_rtk_portal.doorbell.bell import Doorbell
 from sp_rtk_portal.mail import Mailer
 from sp_rtk_portal.tunnel.broker import TunnelBroker
 
@@ -42,6 +43,8 @@ class PortalContext:
     tunnels: TunnelBroker
     # Email the Portal sends itself (Shares; possible copy, #98).
     mailer: Mailer
+    # Doorbell return paths and rings (process-local too).
+    doorbell: Doorbell
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:
