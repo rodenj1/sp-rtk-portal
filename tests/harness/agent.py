@@ -14,6 +14,11 @@ its edges are wired to the harness:
   ``agent.run(seconds=...)`` or ``agent.until(state)``;
 - DNS (for a Doorbell host) is :class:`FakeDns`, and its LAN addresses are
   ``agent.lan``;
+- its UDP (the Doorbell) is real, on 127.0.0.1: :class:`NatUdp` sends what
+  the agent addresses to a public ``(address, port)`` in ``agent.udp.routes``
+  to the local port it maps to (a stub Doorbell server), and shows replies
+  as coming from that public address. ``agent.udp.sent`` is everything the
+  agent tried to send;
 - its state directory is a temp dir, so a "restart" or a "reinstall" is a
   new ``PortalAgent`` over the same directory;
 - its tunnel (a real websocket) goes to the Portal served over TCP
@@ -36,7 +41,13 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from sp_rtk_base.portal_agent.client import read_status, start_claim
+from sp_rtk_base.portal_agent.client import (
+    pause,
+    read_status,
+    resume,
+    start_claim,
+    unclaim,
+)
 from sp_rtk_base.portal_agent.control import PortalAgent, serve
 from sp_rtk_base.portal_agent.protocol import AgentStatus
 from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
@@ -109,6 +120,45 @@ class FakeDns:
         return list(self.records[host])
 
 
+class _NatSocket:
+    def __init__(self, udp: NatUdp, transport: asyncio.DatagramTransport) -> None:
+        self._udp, self._transport = udp, transport
+
+    def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
+        self._udp.sent.append((data, addr))
+        local = self._udp.routes.get(addr)
+        if local is not None:
+            self._transport.sendto(data, local)
+
+    def close(self) -> None:
+        self._transport.close()
+
+
+class _NatProtocol(asyncio.DatagramProtocol):
+    def __init__(self, udp: NatUdp, on_datagram: Any) -> None:
+        self._udp, self._on_datagram = udp, on_datagram
+
+    def datagram_received(self, data: bytes, addr: Any) -> None:
+        source = (str(addr[0]), int(addr[1]))
+        public = {local: public for public, local in self._udp.routes.items()}
+        self._on_datagram(data, public.get(source, source))
+
+
+class NatUdp:
+    """The agent's ``open_udp``: real UDP on 127.0.0.1 with public addresses
+    translated (the base's router and the internet, in one)."""
+
+    def __init__(self) -> None:
+        self.routes: dict[tuple[str, int], tuple[str, int]] = {}
+        self.sent: list[tuple[bytes, tuple[str, int]]] = []
+
+    async def __call__(self, address: str, on_datagram: Any) -> _NatSocket:
+        transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
+            lambda: _NatProtocol(self, on_datagram), local_addr=("127.0.0.1", 0)
+        )
+        return _NatSocket(self, transport)
+
+
 class RunningAgent:
     def __init__(
         self,
@@ -130,12 +180,14 @@ class RunningAgent:
         self.ip = ip
         self.time = AgentTime(portal.clock)
         self.dns = FakeDns()
+        self.udp = NatUdp()
         self.lan: list[LanAddress] = list(LAN)
         self.protocol_version = PROTOCOL_VERSION
         """What the agent sends; raise it to "upgrade" sp-rtk-base."""
         self.traffic = Traffic()
         self.reachable = True
         """``False``: the base is cut off (its requests fail to connect)."""
+        self._tunnel_ws: Any = None
         self._agent: PortalAgent | None = None
         self._server: asyncio.Server | None = None
 
@@ -148,13 +200,22 @@ class RunningAgent:
         self.tunnel_urls.append(url)
         if self.server_port is None or not self.reachable:
             raise OSError("no Portal served for the tunnel")
-        return await ws_connect(
+        self._tunnel_ws = await ws_connect(
             f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
             additional_headers={**headers, "CF-Connecting-IP": self.ip},
         )
+        return self._tunnel_ws
+
+    def drop_tunnel(self) -> None:
+        """The network drops the base's tunnel (its TCP connection dies)."""
+        assert self._tunnel_ws is not None, "no tunnel was opened"
+        self._tunnel_ws.transport.abort()
 
     async def start(self) -> None:
-        extra: dict[str, Any] = {"tunnel_connect": self._tunnel_connect}
+        extra: dict[str, Any] = {
+            "tunnel_connect": self._tunnel_connect,
+            "open_udp": self.udp,
+        }
         if self.app_port is not None:
             extra["app_port"] = self.app_port
         self._agent = PortalAgent(
@@ -202,6 +263,18 @@ class RunningAgent:
 
     async def status(self) -> AgentStatus:
         return await read_status(self.sock)
+
+    async def pause(self) -> AgentStatus:
+        """The local page's "Pause remote access" (tells the Portal at once)."""
+        return await pause(self.sock)
+
+    async def resume(self) -> AgentStatus:
+        """The local page's "Resume remote access"."""
+        return await resume(self.sock)
+
+    async def unclaim(self) -> AgentStatus:
+        """The local page's Un-claim."""
+        return await unclaim(self.sock)
 
     async def run(self, **delta: float) -> None:
         """Let virtual time pass (``agent.run(seconds=60)``); the agent polls

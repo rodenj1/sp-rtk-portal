@@ -197,6 +197,7 @@ class FakeAuthentik:
         app.post("/application/o/token/")(self._token)
         app.get("/application/o/userinfo/")(self._userinfo)
         app.get("/api/v3/core/users/")(self._api_users)
+        app.patch("/api/v3/core/users/{pk}/")(self._api_patch_user)
         app.get("/api/v3/authenticators/admin/all/")(self._api_devices)
         app.delete("/api/v3/authenticators/admin/totp/{pk}/")(self._api_delete_totp)
         return app
@@ -383,6 +384,21 @@ class FakeAuthentik:
         found = [u for u in self.users.values() if u.sub == wanted]
         results = [{"pk": u.pk, "uuid": u.sub, "email": u.email} for u in found]
         return JSONResponse({"pagination": {"count": len(results)}, "results": results})
+
+    async def _api_patch_user(self, pk: int, request: Request) -> Response:
+        """Only ``is_active`` (account deletion deactivates the user)."""
+        if not self._api_allowed(request):
+            return JSONResponse({"detail": "Unauthorized"}, status_code=403)
+        user = self._by_pk(pk)
+        if user is None:
+            return JSONResponse({"detail": "Not found."}, status_code=404)
+        body = await request.json()
+        if set(body) != {"is_active"} or not isinstance(body["is_active"], bool):
+            return JSONResponse({"detail": "unexpected fields"}, status_code=400)
+        user.is_active = body["is_active"]
+        return JSONResponse(
+            {"pk": user.pk, "uuid": user.sub, "is_active": user.is_active}
+        )
 
     async def _api_devices(self, request: Request) -> Response:
         if not self._api_allowed(request):

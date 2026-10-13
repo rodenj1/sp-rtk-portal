@@ -14,8 +14,9 @@
   e.g. a link in an email). A sandboxed base frame's requests are cross-site.
 
 Paths under ``EXEMPT_PREFIXES`` are not Portal pages: ``/b/`` is the base proxy,
-which stamps its own headers (ADR 0004), and ``/agent/`` is the agent API,
-authenticated by signed proofs rather than cookies.
+which stamps its own headers (ADR 0004), ``/agent/`` is the agent API,
+authenticated by signed proofs rather than cookies, and ``/doorbell/`` is the
+Doorbell server's interface, authenticated by its bearer token.
 """
 
 from __future__ import annotations
@@ -23,12 +24,13 @@ from __future__ import annotations
 import re
 
 from starlette.datastructures import Headers, MutableHeaders
+from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 ACTION_HEADER = "X-Portal-Action"
 
-EXEMPT_PREFIXES = ("/b/", "/agent/")
+EXEMPT_PREFIXES = ("/b/", "/agent/", "/doorbell/")
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
@@ -99,6 +101,26 @@ def page_headers(path: str) -> dict[str, str]:
     return PAGE_HEADERS
 
 
+_CONNECT_STATE = "csp_connect_src"
+
+
+def allow_connect(request: HTTPConnection, sources: list[str]) -> None:
+    """Let this one page also ``fetch`` from ``sources`` (exact URLs). The base
+    list uses it for its bases' identity endpoints (Local access, #97)."""
+    setattr(request.state, _CONNECT_STATE, list(sources))
+
+
+def _with_connect(policy: str, sources: list[str]) -> str:
+    if not sources:
+        return policy
+    directives = []
+    for directive in policy.split("; "):
+        if directive.startswith("connect-src "):
+            directive = " ".join([directive, *sources])
+        directives.append(directive)
+    return "; ".join(directives)
+
+
 def _from_elsewhere(headers: Headers) -> bool:
     """Another site, or a sandboxed base frame (an opaque origin, so
     "cross-site" even on this host), asking for anything but a page to open:
@@ -148,6 +170,10 @@ class PortalSecurityMiddleware:
                 headers = MutableHeaders(scope=message)
                 for name, value in stamped.items():
                     headers[name] = value
+                extra = scope.get("state", {}).get(_CONNECT_STATE)
+                if extra:
+                    csp = headers["Content-Security-Policy"]
+                    headers["Content-Security-Policy"] = _with_connect(csp, extra)
             await send(message)
 
         reason = refusal(self.origin, Headers(scope=scope), scope["method"])

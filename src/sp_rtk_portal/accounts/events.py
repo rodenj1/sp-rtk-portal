@@ -32,6 +32,8 @@ class PasswordChanged:
     # recovery: the hook runs before the recovering browser's new session
     # starts, so every existing session can go.
     keep_session_token: str | None
+    # Where the change came from (the client IP), for the audit log.
+    ip: str | None = None
 
 
 PasswordChangedHook = Callable[[Connection, PasswordChanged], Awaitable[None]]

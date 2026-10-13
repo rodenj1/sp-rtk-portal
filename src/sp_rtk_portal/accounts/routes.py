@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from sp_rtk_portal import audit
-from sp_rtk_portal.accounts import attempts, events, sessions
+from sp_rtk_portal.accounts import attempts, events, review, sessions
 from sp_rtk_portal.accounts.authentik import (
     AuthentikFailedClosed,
     FlowAttempt,
@@ -25,6 +25,7 @@ from sp_rtk_portal.accounts.deps import safe_next
 from sp_rtk_portal.accounts.events import PasswordChanged
 from sp_rtk_portal.accounts.store import upsert_on_login
 from sp_rtk_portal.context import PortalContext, portal_context
+from sp_rtk_portal.shares import sharing
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.templates import render
 
@@ -136,6 +137,7 @@ async def signed_in(
 
     After a recovery, the ``PasswordChanged`` hooks run first (in the same
     transaction), so they can end every session that existed before it.
+    While the review of recent Shares is due, it's where the user lands.
     """
     now = ctx.clock.now()
     ip = client_ip(request)
@@ -147,10 +149,13 @@ async def signed_in(
                 conn, at=now, kind=audit.PASSWORD_RECOVERY, account_id=account.id, ip=ip
             )
             await ctx.account_events.password_changed(
-                conn, PasswordChanged(account.id, now, events.RECOVERY, None)
+                conn, PasswordChanged(account.id, now, events.RECOVERY, None, ip)
             )
+        if await review.is_due(conn, account.id):
+            next_url = review.PATH
         token = await sessions.start(conn, account.id, now, lifetime)
         await audit.record(conn, at=now, kind=audit.LOGIN, account_id=account.id, ip=ip)
+        await sharing.convert_pending(conn, ctx, account, ip)
     log.info("account %s signed in", account.id)
     response = JSONResponse({"next": next_url})
     sessions.set_cookie(response, token, lifetime)

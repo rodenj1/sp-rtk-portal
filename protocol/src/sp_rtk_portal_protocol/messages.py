@@ -148,6 +148,26 @@ class ErrorReply(Message):
     """No base has this key: the agent wipes its key and goes idle."""
 
 
+# --- Release (local Un-claim) ----------------------------------------------
+
+RELEASE_PATH = "/agent/release"
+"""POST, signed with the base key: :class:`Release` -> :class:`Released`, or
+401 ``unclaimed`` when the Portal has no base with this key (already
+Un-claimed there). Best effort: the agent wipes its key either way."""
+
+
+@dataclass(frozen=True)
+class Release(Message):
+    """Body of a release: nothing. The signing key names the base, and the
+    Portal Un-claims it (deletes its record, Shares and Remote sessions)."""
+
+
+@dataclass(frozen=True)
+class Released(Message):
+    base_id: str
+    """The ``<id>`` that no longer exists."""
+
+
 # --- Polls and Check-ins (ADR 0002) ----------------------------------------
 #
 # A Claimed base polls (``POST /agent/poll``) every ``poll_interval`` seconds,
@@ -174,9 +194,12 @@ DOORBELL_IGNORED = "ignored"
 """The configured host didn't resolve, or resolved to a private, loopback or
 link-local address: the agent ignores it and polls."""
 DOORBELL_UNAVAILABLE = "unavailable"
-"""A usable host is configured but this agent can't ring it (yet): it polls."""
+"""A usable host is configured and the agent sends keepalives to it, but the
+Portal hasn't heard them lately (or the agent predates the Doorbell): it
+polls."""
 DOORBELL_OK = "ok"
-"""The Doorbell answers: the base is woken by it (wake mode Doorbell)."""
+"""The Portal hears the base's keepalives: the base is woken by a ring (wake
+mode Doorbell) and stops polling."""
 
 
 @dataclass(frozen=True)
@@ -220,6 +243,18 @@ class Poll(Message):
 
 
 @dataclass(frozen=True)
+class LiveSession(Message):
+    """A live Remote session on the base, for its local Portal page."""
+
+    who: str
+    """The user's email."""
+    since: str
+    """When the Remote session started (ISO 8601, UTC)."""
+    shared: bool = False
+    """The user has the base through a Share (not its Operator)."""
+
+
+@dataclass(frozen=True)
 class PollReply(Message):
     config: AgentConfig
     metered: bool = False
@@ -231,6 +266,9 @@ class PollReply(Message):
     at its own (checked) tunnel URL with a GET signed by its base key whose
     proof echoes this in its ``nonce`` claim. The Portal refuses any other
     nonce, so a forged Wake can only cause a refused tunnel attempt."""
+    sessions: list[LiveSession] = dataclasses.field(default_factory=list)
+    """The base's live Remote sessions, oldest first (protocol package
+    0.6.0): its local Portal page lists them."""
 
 
 @dataclass(frozen=True)
@@ -258,6 +296,12 @@ class CheckInReply(Message):
     config: AgentConfig
     metered: bool = False
     notices: list[Notice] = dataclasses.field(default_factory=list)
+    doorbell_heard: bool = False
+    """The Portal has heard this base's Doorbell keepalives lately (through
+    the Doorbell server): the agent may stop polling and rely on rings."""
+    ring_key: str | None = None
+    """The base's ring key (base64url), when the agent config names a
+    Doorbell host: rings are authenticated with it (see :mod:`.doorbell`)."""
 
 
 @dataclass(frozen=True)

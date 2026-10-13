@@ -11,7 +11,13 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sp_rtk_portal_protocol import ReplayCache
 
 from sp_rtk_portal import health
-from sp_rtk_portal.accounts import account_page_routes, signup_routes
+from sp_rtk_portal.accounts import (
+    account_page_routes,
+    review,
+    security,
+    security_routes,
+    signup_routes,
+)
 from sp_rtk_portal.accounts import routes as account_routes
 from sp_rtk_portal.accounts.attempts import PendingAttempts
 from sp_rtk_portal.accounts.authentik import Authentik
@@ -25,11 +31,17 @@ from sp_rtk_portal.agent_api import routes as agent_routes
 from sp_rtk_portal.agent_api import settings_routes
 from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
 from sp_rtk_portal.bases import routes as base_routes
+from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Database
+from sp_rtk_portal.doorbell import routes as doorbell_routes
+from sp_rtk_portal.doorbell.bell import Doorbell
+from sp_rtk_portal.mail import Mailer
 from sp_rtk_portal.proxy.middleware import BaseProxy
+from sp_rtk_portal.shares import routes as share_routes
+from sp_rtk_portal.shares import sharing
 from sp_rtk_portal.tunnel import routes as tunnel_routes
 from sp_rtk_portal.tunnel.broker import TunnelBroker
 from sp_rtk_portal.web.security import SAFE_METHODS, PortalSecurityMiddleware
@@ -49,6 +61,7 @@ def create_app(
     """
     clock = clock or SystemClock()
     db = Database(settings.database_url)
+    tunnels = TunnelBroker(settings, clock, db)
     ctx = PortalContext(
         settings=settings,
         clock=clock,
@@ -57,9 +70,15 @@ def create_app(
         login_attempts=PendingAttempts(settings.login_attempt_lifetime),
         flow_attempts=PendingAttempts(settings.login_attempt_lifetime),
         account_events=AccountEvents(),
+        base_events=BaseEvents(),
         agent_proofs=ReplayCache(),
-        tunnels=TunnelBroker(settings, clock, db),
+        tunnels=tunnels,
+        mailer=Mailer(settings),
+        doorbell=Doorbell(clock, tunnels),
     )
+    ctx.base_events.on_unclaimed(sharing.unclaimed)
+    ctx.account_events.on_password_changed(security.LogOutEverywhere(ctx))
+    ctx.account_events.on_password_changed(review.review_due)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -90,10 +109,13 @@ def create_app(
     app.include_router(account_routes.router)
     app.include_router(signup_routes.router)
     app.include_router(account_page_routes.router)
+    app.include_router(security_routes.router)
     app.include_router(base_routes.router)
     app.include_router(agent_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(tunnel_routes.router)
+    app.include_router(share_routes.router)
+    app.include_router(doorbell_routes.router)
     return app
 
 
