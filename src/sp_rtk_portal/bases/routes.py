@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sp_rtk_portal.accounts.deps import current_account
 from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.agent_api import config as agent_config
-from sp_rtk_portal.bases import claims, local, online, store
+from sp_rtk_portal.bases import claims, local, online, store, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.security import allow_connect
@@ -95,6 +95,24 @@ async def set_metered(
     async with ctx.db.connection() as conn:
         found = await store.set_metered(conn, base_id, account.id, body.metered)
     if not found:
+        return JSONResponse({"error": "No such base."}, status_code=404)
+    return JSONResponse({"next": "/"})
+
+
+@router.post("/bases/{base_id}/unclaim")
+async def unclaim_base(
+    base_id: str,
+    request: Request,
+    account: Account = Depends(current_account),
+    ctx: PortalContext = Depends(portal_context),
+) -> JSONResponse:
+    """The Operator Un-claims their base (e.g. one they can no longer reach
+    physically). Only its owner may: anyone else gets 404, Shared users
+    included."""
+    done = await unclaim.by_operator(
+        ctx, base_id=base_id, account_id=account.id, ip=client_ip(request)
+    )
+    if not done:
         return JSONResponse({"error": "No such base."}, status_code=404)
     return JSONResponse({"next": "/"})
 

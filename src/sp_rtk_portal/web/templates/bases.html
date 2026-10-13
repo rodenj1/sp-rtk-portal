@@ -80,6 +80,10 @@
       <input type="hidden" name="metered" value="{{ 'false' if base.metered else 'true' }}">
       <button type="submit">{% if base.metered %}Unmark metered{% else %}Mark metered (polls less often){% endif %}</button>
     </form>
+    <form class="unclaim" data-action="/bases/{{ base.id }}/unclaim"
+          data-confirm="Un-claim {{ base.name }}? The Portal forgets this base: its Shares and any Remote sessions end, and Claiming it again makes it a new base with a new address.">
+      <button type="submit" data-field="unclaim">Un-claim</button>
+    </form>
   </li>
   {% endfor %}
 </ul>

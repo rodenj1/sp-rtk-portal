@@ -148,6 +148,26 @@ class ErrorReply(Message):
     """No base has this key: the agent wipes its key and goes idle."""
 
 
+# --- Release (local Un-claim) ----------------------------------------------
+
+RELEASE_PATH = "/agent/release"
+"""POST, signed with the base key: :class:`Release` -> :class:`Released`, or
+401 ``unclaimed`` when the Portal has no base with this key (already
+Un-claimed there). Best effort: the agent wipes its key either way."""
+
+
+@dataclass(frozen=True)
+class Release(Message):
+    """Body of a release: nothing. The signing key names the base, and the
+    Portal Un-claims it (deletes its record, Shares and Remote sessions)."""
+
+
+@dataclass(frozen=True)
+class Released(Message):
+    base_id: str
+    """The ``<id>`` that no longer exists."""
+
+
 # --- Polls and Check-ins (ADR 0002) ----------------------------------------
 #
 # A Claimed base polls (``POST /agent/poll``) every ``poll_interval`` seconds,
