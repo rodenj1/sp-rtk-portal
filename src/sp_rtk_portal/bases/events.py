@@ -2,8 +2,9 @@
 
 ``Unclaimed`` fires when a base is Un-claimed, from its local UI (a signed
 release) or on the Portal by its Operator. It runs inside the transaction
-that deletes the base and writes the audit entry, so a hook's writes commit
-(or roll back) with it. Shares (#94) hook in here to remove the base's Shares
+that deletes the base and writes the audit entry, just BEFORE the base row
+is deleted (so rows that reference it can be removed first), and a hook's
+writes commit (or roll back) with it. Shares (#94) hook in here to remove the base's Shares
 and Pending shares:
 
     ctx.base_events.on_unclaimed(remove_shares)

@@ -344,7 +344,8 @@ async def test_un_claim_runs_the_unclaimed_hooks_in_its_transaction(
     [(event, still_there)] = seen
     assert (event.base_id, event.owner_account_id, event.by) == (base_id, owner, where)
     assert event.at == portal.clock.now()
-    assert still_there == 0  # it runs after the delete, before the commit
+    assert still_there == 1  # before the base row goes, so Shares can go first
+    assert await portal.query("SELECT id FROM base") == []
 
 
 # --- Claiming again ------------------------------------------------------------------
