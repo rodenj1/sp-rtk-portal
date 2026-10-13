@@ -17,5 +17,8 @@
     <button type="submit" data-field="open">Open remotely</button>
   </form>
   <p class="error" data-error role="alert" hidden></p>
+  <div class="base-frame" data-field="frame-box" data-show="connected" {% if state != "connected" %}hidden{% endif %}>
+    <p class="frame-label" data-field="frame-label">Below: {{ base.name }}'s own pages, served by the base itself. The Portal never asks for your password or sign-in in there.</p>
+  </div>
 </section>
 {% endblock %}
