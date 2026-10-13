@@ -409,7 +409,7 @@ async def test_a_claim_from_an_unsupported_agent_gets_426(portal: Portal):
         portal.context.settings, min_protocol_version=PROTOCOL_VERSION + 1
     )
     async with running_agent(portal) as a:
-        with pytest.raises(Exception, match="Upgrade sp-rtk-base"):
+        with pytest.raises(Exception, match="Update sp-rtk-base"):
             await a.connect()
     assert await portal.query("SELECT * FROM pairing") == []
 

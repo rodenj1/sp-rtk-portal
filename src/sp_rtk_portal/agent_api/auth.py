@@ -62,7 +62,7 @@ class AgentTooOld(AgentRefused):
             min_version=min_version,
             message=(
                 f"This sp-rtk-base speaks Portal protocol {version}; the Portal "
-                f"needs {min_version} or later. Upgrade sp-rtk-base to keep "
+                f"needs {min_version} or later. Update sp-rtk-base to keep "
                 "using the Portal."
             ),
         )
