@@ -20,16 +20,43 @@ The agent-to-Portal protocol, published from the `sp-rtk-portal` repo so the Por
 
 The package version (`pyproject.toml`) is bumped on every change, so a pinned consumer can tell which shapes it has.
 
-sp-rtk-base depends on it as a Git subdirectory dependency:
+It is published to PyPI, and sp-rtk-base depends on it from there:
 
 ```toml
 [project]
-dependencies = ["sp-rtk-portal-protocol"]
-
-[tool.uv.sources]
-sp-rtk-portal-protocol = { git = "https://github.com/rodenj1/sp-rtk-portal", subdirectory = "protocol", rev = "<commit or tag>" }
+dependencies = ["sp-rtk-portal-protocol>=0.9.0,<1"]
 ```
 
-The `rev` is a full commit sha of this repo. Bump it when the agent needs a newer protocol.
+Raise the lower bound when the agent needs newer shapes. The Portal uses this directory directly, as a uv workspace member.
 
-For local development against a checkout next to it, use `{ path = "../sp-rtk-portal/protocol", editable = true }` instead.
+For local development of both sides at once, point sp-rtk-base at a checkout next to it with `[tool.uv.sources] sp-rtk-portal-protocol = { path = "../sp-rtk-portal/protocol", editable = true }`, and don't commit that.
+
+## Releasing
+
+`.github/workflows/protocol-release.yml` publishes this package to PyPI when a `protocol-v<version>` tag is pushed. It checks the tag against `version` in this `pyproject.toml`, runs these tests on Python 3.10 to 3.13, builds with `uv build`, runs `twine check`, then uploads with PyPI Trusted Publishing (OIDC, no token). Portal image tags (`v*`) and protocol tags don't trigger each other's workflow.
+
+Once, before the first release:
+
+1. On pypi.org, under Your account > Publishing > Add a new pending publisher > GitHub, enter:
+   - PyPI project name: `sp-rtk-portal-protocol`
+   - Owner: `rodenj1`
+   - Repository name: `sp-rtk-portal`
+   - Workflow name: `protocol-release.yml`
+   - Environment name: `pypi`
+2. On GitHub, in the sp-rtk-portal repo's Settings > Environments, create an environment named `pypi` (optionally with required reviewers, to approve each upload).
+
+   GitHub offers environments in a private repo only on a paid plan (Pro, Team or Enterprise). If Settings has no Environments page, leave the environment name blank in step 1, and delete the `environment:` block from the workflow's `publish-pypi` job.
+
+Each release:
+
+1. Bump `version` in this `pyproject.toml` on `main` (PyPI never accepts the same version twice).
+2. Tag that commit and push the tag:
+
+   ```sh
+   git tag protocol-v0.9.0
+   git push origin protocol-v0.9.0
+   ```
+
+3. Once it's on PyPI, raise sp-rtk-base's lower bound if the agent needs the new version, then run `uv lock` there.
+
+To rerun a failed release for an existing tag, run the workflow by hand (Actions > protocol-release > Run workflow) with the tag.
