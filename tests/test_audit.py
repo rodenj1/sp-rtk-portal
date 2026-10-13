@@ -1,4 +1,4 @@
-"""Audit entries. The audit page comes later, so these read the database."""
+"""Audit entries as written to the database (the page is in test_audit_page.py)."""
 
 from .harness.fake_authentik import FakeAuthentik
 

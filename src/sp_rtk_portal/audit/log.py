@@ -192,7 +192,7 @@ def describe(kind: str, detail: dict[str, Any], *, whole: bool = True) -> str:
 
 def _detail_text(detail: dict[str, Any]) -> str:
     parts = []
-    for key, value in detail.items():
+    for key, value in sorted(detail.items()):
         if isinstance(value, list):
             value = ", ".join(str(v) for v in value)
         elif isinstance(value, dict):

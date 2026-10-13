@@ -104,6 +104,10 @@ Email is Authentik's: accounts are keyed on `(iss, sub)` and email is re-read at
 
 **Delete account** (`/account/delete`) lists the bases it will Un-claim, then (`POST /account/delete`) deactivates the Authentik user through the admin API (if that fails, nothing changes), Un-claims every base the account Claimed (audit `unclaim` with `by: account_deleted`), removes the Shares it holds on other bases (`share_left`, `reason: account_deleted`), ends its sessions and audits `account_deleted`. The account row stays, marked `deleted_at`, so the audit log keeps saying who did what. The code is in `src/sp_rtk_portal/accounts/` (`security.py`, `review.py`, `deletion.py`).
 
+## Audit log
+
+`/audit` (linked from the base list and the account page) lists, newest first, the audit entries of the last 90 days the signed-in user may see: an Operator sees every entry about their bases (owned now, or Claimed by them and since Un-claimed), whoever acted, plus their own; everyone sees their own entries and those naming them as the Shared user. On the latter, the Operator's email and IP are hidden. Each row shows what, who, base, when (UTC) and IP. Kinds the page doesn't know still show, as words plus their detail. Entries are deleted after 90 days (`audit/retention.py`, at startup and every `audit_purge_interval` seconds, measured on the Portal clock). The code is in `src/sp_rtk_portal/audit/`.
+
 ## Container image
 
 `Dockerfile` builds the image the homelab runs (non-root uid 1000, read-only root filesystem, listening on `PORTAL_PORT`, default 8000). Pushing a `v*` tag runs `.github/workflows/image.yml`: the tests, then a push to `ghcr.io/rodenj1/sp-rtk-portal` tagged `<version>`, `<major>.<minor>` and `sha-<short>`. The run summary prints the digest, which [homelab-talos](https://github.com/rodenj1/homelab-talos) pins in `clusters/production/apps/sp-rtk-portal/deployment.yaml`.

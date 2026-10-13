@@ -16,7 +16,7 @@ import pytest
 from .harness.agent import BASE_IP, RunningAgent, running_agent
 from .harness.clock import FakeClock
 from .harness.fake_authentik import FakeAuthentik
-from .harness.pages import entries
+from .harness.pages import entries, fields
 from .harness.portal import Browser, Portal
 
 OPERATOR = "operator@example.com"
@@ -220,3 +220,53 @@ async def test_entries_older_than_90_days_are_purged(
     ]
     clock.advance(days=90, minutes=1)
     await until_gone(portal, 0)
+
+
+# --- Getting there ------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("page", ["/", "/account"])
+async def test_the_page_is_linked_from_the_base_list_and_the_account_page(
+    operator: Browser, page: str
+):
+    assert fields((await operator.get(page)).text)["audit-log@href"] == ["/audit"]
+
+
+async def test_signed_out_the_page_asks_for_sign_in(browser: Browser):
+    resp = await browser.get("/audit")
+
+    assert (resp.status_code, resp.headers["location"]) == (303, "/login")
+
+
+# --- Kinds this page doesn't know ------------------------------------------------------------
+
+
+async def test_an_entry_of_an_unknown_kind_still_shows_in_words(
+    portal: Portal,
+    operator: Browser,
+    base_id: str,
+    clock: FakeClock,
+    stack: AsyncExitStack,
+):
+    """A later ticket's kind (written here as that ticket would)."""
+    colleague = await sign_in(portal, stack, COLLEAGUE)
+    shares = f"/bases/{base_id}/shares"
+    assert (await operator.action(shares, {"email": COLLEAGUE})).status_code == 200
+    await portal.query(
+        "INSERT INTO audit_entry (at, kind, base_id, ip, detail)"
+        " VALUES (%s, 'base_relocated', %s, '192.0.2.5',"
+        ' \'{"from": "Barn", "ips": ["192.0.2.5", "192.0.2.6"]}\')',
+        clock.now(),
+        base_id,
+    )
+
+    [newest, *_] = await audit(operator)
+
+    assert newest == newest | {
+        "@data-kind": "base_relocated",
+        "what": "Base relocated (from: Barn; ips: 192.0.2.5, 192.0.2.6)",
+        "who": "The base",
+        "base": BASE_NAME,
+        "ip": "192.0.2.5",
+    }
+    assert "base_relocated" not in [r["@data-kind"] for r in await audit(colleague)]
