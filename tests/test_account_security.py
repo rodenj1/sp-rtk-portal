@@ -7,6 +7,7 @@ account deletion.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncIterator
 
 import pytest
@@ -178,3 +179,91 @@ async def test_a_recovery_ends_every_session_but_the_recovering_one(
         " WHERE kind = 'log_out_everywhere'"
     )
     assert entry == {"ip": "192.0.2.50", "detail": {"trigger": "password_recovery"}}
+
+
+# --- Review of recent Shares after a password change or recovery ------------------
+
+COLLEAGUE = "sam@example.com"
+OLD_COLLEAGUE = "kim@example.com"
+STRANGER = "nobody-yet@example.com"
+
+
+async def signed_in_user(portal: Portal, email: str) -> None:
+    """``email`` has a verified Portal account (signed in once)."""
+    portal.authentik.add_user(email, PASSWORD)
+    async with portal.browser(ip="198.51.100.9") as b:
+        assert (await b.sign_in(email, PASSWORD)).json() == {"next": "/"}
+
+
+def actions(html: str, prefix: str) -> list[str]:
+    return re.findall(rf'data-action="({re.escape(prefix)}[^"]*)"', html)
+
+
+async def test_after_a_recovery_the_review_lists_recent_shares_with_one_click_remove(
+    portal: Portal, authentik: FakeAuthentik, operator: Browser, agent: RunningAgent
+):
+    base_id = await base_of(agent)
+    for email in (OLD_COLLEAGUE, COLLEAGUE):
+        await signed_in_user(portal, email)
+    old = await operator.action(f"/bases/{base_id}/shares", {"email": OLD_COLLEAGUE})
+    assert old.status_code == 200, old.text
+    portal.clock.advance(days=31)
+    assert (await operator.sign_in(EMAIL, PASSWORD)).json() == {"next": "/"}
+    for email in (COLLEAGUE, STRANGER):
+        resp = await operator.action(f"/bases/{base_id}/shares", {"email": email})
+        assert resp.status_code == 200, resp.text
+
+    async with portal.browser(ip="192.0.2.50") as me:
+        token = await request_recovery_link(me, authentik)
+        resp = await me.action(
+            "/reset", {"t": token, "password": NEW, "password_repeat": NEW}
+        )
+        assert resp.json() == {"next": "/account/review"}
+
+        page = (await me.get("/account/review")).text
+        assert COLLEAGUE in page
+        assert STRANGER in page
+        assert OLD_COLLEAGUE not in page  # older than 30 days
+        [remove_share] = actions(page, "/account/review/shares/")
+        [remove_pending] = actions(page, "/account/review/pending-shares/")
+
+        assert (await me.action(remove_share)).json() == {"next": "/account/review"}
+        assert (await me.action(remove_pending)).json() == {"next": "/account/review"}
+
+        page = (await me.get("/account/review")).text
+        assert COLLEAGUE not in page
+        assert STRANGER not in page
+    shared = await portal.query(
+        "SELECT a.email FROM share s JOIN account a ON a.id = s.account_id"
+    )
+    assert shared == [{"email": OLD_COLLEAGUE}]
+    assert await portal.query("SELECT id FROM pending_share") == []
+    kinds = await portal.query(
+        "SELECT kind FROM audit_entry WHERE kind IN"
+        " ('share_removed', 'pending_share_removed') ORDER BY id"
+    )
+    assert [k["kind"] for k in kinds] == ["share_removed", "pending_share_removed"]
+
+
+async def test_the_review_can_be_skipped_and_returns_at_each_login_until_seen(
+    portal: Portal, operator: Browser
+):
+    resp = await operator.action(
+        "/account/password",
+        {"current_password": PASSWORD, "password": NEW, "password_repeat": NEW},
+    )
+    assert resp.json() == {"next": "/account/review"}
+    page = (await operator.get("/account/review")).text
+    assert 'href="/"' in page and "Skip for now" in page
+    assert (await operator.get("/")).status_code == 200  # skipped
+
+    async with portal.browser() as again:
+        assert (await again.sign_in(EMAIL, NEW)).json() == {"next": "/account/review"}
+        assert (
+            'data-action="/account/review/done"'
+            in (await again.get("/account/review")).text
+        )
+        assert (await again.action("/account/review/done")).json() == {"next": "/"}
+
+    async with portal.browser() as later:
+        assert (await later.sign_in(EMAIL, NEW)).json() == {"next": "/"}
