@@ -9,6 +9,7 @@ from sp_rtk_portal_protocol import (
     CLAIM_TOKEN_PATH,
     CLAIMS_PATH,
     POLL_PATH,
+    RELEASE_PATH,
     CheckIn,
     CheckInReply,
     Claimed,
@@ -18,6 +19,8 @@ from sp_rtk_portal_protocol import (
     ErrorReply,
     Poll,
     PollReply,
+    Release,
+    Released,
 )
 
 from sp_rtk_portal.agent_api import config as agent_config
@@ -27,7 +30,7 @@ from sp_rtk_portal.agent_api.auth import (
     agent_request,
     reply,
 )
-from sp_rtk_portal.bases import claims, online, presence
+from sp_rtk_portal.bases import claims, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 
 router = APIRouter()
@@ -167,3 +170,16 @@ async def check_in(
             ring_key=ring_key,
         )
     )
+
+
+@router.post(RELEASE_PATH)
+async def release(
+    req: AgentRequest = Depends(agent_request),
+    ctx: PortalContext = Depends(portal_context),
+) -> JSONResponse:
+    """A local Un-claim: the base asks to be forgotten, signed with its key."""
+    req.message(Release)
+    base_id = await unclaim.by_base(ctx, thumbprint=req.proof.thumbprint, ip=req.ip)
+    if base_id is None:
+        raise _unclaimed()
+    return reply(Released(base_id=base_id))

@@ -78,6 +78,10 @@ The packets (`protocol/src/sp_rtk_portal_protocol/doorbell.py`): a keepalive is 
 
 `tests/test_doorbell.py` runs the real agent against a stub Doorbell server (`tests/harness/doorbell_server.py`) that does exactly the above over real UDP.
 
+## Un-claim
+
+An Operator Un-claims a base on the Portal (`POST /bases/<id>/unclaim`, the list's Un-claim button; anyone else gets 404), or the base does it from its local Portal page with a signed `POST /agent/release`. Either way the Portal deletes the base record and its key, runs the `ctx.base_events.on_unclaimed` hooks (Shares remove themselves there), writes an `unclaim` audit entry, then ends the base's Remote sessions (reason `un_claim`, revoking their `/b/` tokens) and closes its tunnel. An agent Un-claimed on the Portal learns it from the 401 `unclaimed` on its next request and wipes its key. Claiming again makes a new key and `<id>`.
+
 ## Container image
 
 `Dockerfile` builds the image the homelab runs (non-root uid 1000, read-only root filesystem, listening on `PORTAL_PORT`, default 8000). Pushing a `v*` tag runs `.github/workflows/image.yml`: the tests, then a push to `ghcr.io/rodenj1/sp-rtk-portal` tagged `<version>`, `<major>.<minor>` and `sha-<short>`. The run summary prints the digest, which [homelab-talos](https://github.com/rodenj1/homelab-talos) pins in `clusters/production/apps/sp-rtk-portal/deployment.yaml`.
