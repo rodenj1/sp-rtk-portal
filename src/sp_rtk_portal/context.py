@@ -15,6 +15,7 @@ from starlette.requests import HTTPConnection
 from sp_rtk_portal.accounts.attempts import PendingAttempts
 from sp_rtk_portal.accounts.authentik import Authentik
 from sp_rtk_portal.accounts.events import AccountEvents
+from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
@@ -33,6 +34,8 @@ class PortalContext:
     # TOTP code during recovery or a password change).
     flow_attempts: PendingAttempts
     account_events: AccountEvents
+    # Hooks on a base going away (Un-claim); Shares (#94) hook in here.
+    base_events: BaseEvents
     # Every agent request proof seen in the last minute (refuses replays).
     agent_proofs: ReplayCache
     # Wakes, tunnels and Remote sessions (process-local: one instance).
