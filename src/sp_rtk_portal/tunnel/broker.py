@@ -21,6 +21,15 @@ All of it is process-local state (the Portal is a single instance, ADR
 
 Idle timeout and hard cap come from the agent config current when the
 session started.
+
+What a Session bar shows (:meth:`TunnelBroker.state`) follows the base's
+current Wake attempt: **waking** after Open remotely, **reconnecting** after
+the tunnel dropped under live sessions (the broker Wakes the base once more
+on its own), and **didnt_wake** once an attempt has gone unanswered for the
+poll interval + :data:`WAKE_GRACE`. Retry (Open remotely again) starts a new
+attempt. **Still there?** (:meth:`TunnelBroker.still_there`) comes
+:attr:`Settings.still_there_warning` before the hard cap;
+:meth:`TunnelBroker.keep_going` restarts the hard cap.
 """
 
 from __future__ import annotations
@@ -39,6 +48,7 @@ from sp_rtk_portal_protocol import FrameError, Stream, Tunnel, TunnelClosed
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from sp_rtk_portal.agent_api import config as agent_config
+from sp_rtk_portal.bases import online
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
@@ -52,6 +62,10 @@ TOKEN_BYTES = 32
 LEFT = "left"
 HARD_CAP = "hard_cap"
 UN_CLAIM = "un_claim"
+
+WAKE_GRACE = timedelta(seconds=15)
+"""How much longer than one poll interval a Wake may take before the bar says
+Didn't wake (35 s, or 75 s metered, with the default intervals)."""
 
 
 class TunnelDown(Exception):
@@ -78,9 +92,21 @@ class RemoteSession:
     """When the last status channel closed (start, until one opens)."""
     ended: bool = False
     end_reason: str | None = None
+    warned: bool = False
+    """Its bars were told Still there? (until Keep going)."""
 
 
-SessionState = Literal["waking", "connected", "ended"]
+SessionState = Literal["waking", "reconnecting", "didnt_wake", "connected", "ended"]
+
+
+@dataclass
+class _Attempt:
+    """A Wake the base hasn't answered yet (its tunnel isn't up)."""
+
+    kind: Literal["waking", "reconnecting"]
+    deadline: datetime
+    overdue: bool = False
+    """Its bars were told Didn't wake."""
 
 
 @dataclass
@@ -114,6 +140,8 @@ class TunnelBroker:
         self._tunnels: dict[str, _Attached] = {}
         self._sessions: dict[int, RemoteSession] = {}
         self._bases: dict[str, _Base] = {}
+        self._attempts: dict[str, _Attempt] = {}
+        self._stopping = False
         self._sweeper: asyncio.Task[None] | None = None
         self._wake_hooks: list[Callable[[str], None]] = []
 
@@ -127,6 +155,7 @@ class TunnelBroker:
         self._sweeper = asyncio.create_task(self._sweep_forever())
 
     async def stop(self) -> None:
+        self._stopping = True
         if self._sweeper is not None:
             self._sweeper.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -201,6 +230,7 @@ class TunnelBroker:
         if previous is not None:
             await self._close_tunnel(previous)
         self._tunnels[base_id] = attached
+        self._attempts.pop(base_id, None)
         log.info("tunnel open for base %s", base_id)
         await self._changed(base_id)
         try:
@@ -225,6 +255,10 @@ class TunnelBroker:
                 await websocket.close()
             if self._tunnels.get(base_id) is attached:
                 del self._tunnels[base_id]
+                if self._live(base_id) and not self._stopping:
+                    # Dropped under live sessions: Wake the base once more.
+                    with contextlib.suppress(Exception):
+                        await self._attempt_wake(base_id, "reconnecting")
             log.info("tunnel closed for base %s", base_id)
             await self._changed(base_id)
 
@@ -288,9 +322,24 @@ class TunnelBroker:
             self._sessions[session.id] = session
             log.info("Remote session %s started on base %s", session.id, base_id)
         if not self.tunnel_up(base_id):
-            self.wake(base_id)
+            attempt = self._attempts.get(base_id)
+            if attempt is None or attempt.deadline <= self._clock.now():
+                await self._attempt_wake(base_id, "waking")  # first, or Retry
         await self._changed(base_id)
         return session
+
+    async def _attempt_wake(
+        self, base_id: str, kind: Literal["waking", "reconnecting"]
+    ) -> None:
+        async with self._db.connection() as conn:
+            config = await agent_config.current(conn, self._settings)
+            cur = await conn.execute(
+                "SELECT metered FROM base WHERE id = %s", (base_id,)
+            )
+            row = await cur.fetchone()
+        beat = timedelta(seconds=online.interval(config, bool(row and row["metered"])))
+        self.wake(base_id)
+        self._attempts[base_id] = _Attempt(kind, self._clock.now() + beat + WAKE_GRACE)
 
     def lookup(self, base_id: str, token: str) -> RemoteSession | None:
         """The live Remote session this path token belongs to, on this base
@@ -308,7 +357,35 @@ class TunnelBroker:
     def state(self, session: RemoteSession) -> SessionState:
         if session.ended:
             return "ended"
-        return "connected" if self.tunnel_up(session.base_id) else "waking"
+        if self.tunnel_up(session.base_id):
+            return "connected"
+        attempt = self._attempts.get(session.base_id)
+        if attempt is None:
+            return "waking"
+        if attempt.deadline <= self._clock.now():
+            return "didnt_wake"
+        return attempt.kind
+
+    def cap_at(self, session: RemoteSession) -> datetime:
+        """When the hard cap pauses ``session``."""
+        return session.started_at + session.hard_cap
+
+    def still_there(self, session: RemoteSession) -> bool:
+        """Time to ask Still there? (the hard cap is near)."""
+        warning = min(self._settings.still_there_warning, session.hard_cap)
+        return not session.ended and self._clock.now() >= self.cap_at(session) - warning
+
+    async def keep_going(self, session: RemoteSession) -> None:
+        """Keep going: the hard cap starts over from now."""
+        if session.ended:
+            return
+        session.started_at = self._clock.now()
+        session.warned = False
+        await self._changed(session.base_id)
+
+    def present(self, base_id: str) -> list[RemoteSession]:
+        """The base's Remote sessions with a Session bar open now."""
+        return [s for s in self._live(base_id) if s.attendants > 0]
 
     @contextlib.asynccontextmanager
     async def attend(
@@ -319,12 +396,15 @@ class TunnelBroker:
         session.left_at = None
         if ip:
             session.ip = ip
+        if session.attendants == 1:
+            await self._changed(session.base_id)  # presence
         try:
             yield
         finally:
             session.attendants -= 1
             if session.attendants == 0:
                 session.left_at = self._clock.now()
+                await self._changed(session.base_id)
 
     async def wait_change(self, base_id: str, seen: int) -> int:
         """Wait until anything about ``base_id``'s tunnel or sessions changed
@@ -366,6 +446,7 @@ class TunnelBroker:
         log.info("Remote session %s ended: %s", session.id, reason)
         if not self._live(session.base_id):
             self._wakes.pop(session.base_id, None)
+            self._attempts.pop(session.base_id, None)
             await self.close_tunnel(session.base_id)
         await self._changed(session.base_id)
 
@@ -403,11 +484,16 @@ class TunnelBroker:
     # --- timeouts ------------------------------------------------------------
 
     async def sweep(self) -> None:
-        """End Remote sessions past their idle timeout or hard cap."""
+        """End Remote sessions past their idle timeout or hard cap, and tell
+        Session bars when a Wake went unanswered or the hard cap is near."""
         now = self._clock.now()
         for session in list(self._sessions.values()):
             if now - session.started_at >= session.hard_cap:
                 await self.end_session(session, HARD_CAP)
+                continue
+            if not session.warned and self.still_there(session):
+                session.warned = True
+                await self._changed(session.base_id)
             elif (
                 session.attendants == 0
                 and session.left_at is not None
@@ -417,6 +503,10 @@ class TunnelBroker:
         for base_id, pending in list(self._wakes.items()):
             if pending.expires_at <= now:
                 del self._wakes[base_id]
+        for base_id, attempt in list(self._attempts.items()):
+            if not attempt.overdue and attempt.deadline <= now:
+                attempt.overdue = True
+                await self._changed(base_id)
 
     async def _sweep_forever(self) -> None:
         while True:
