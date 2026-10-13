@@ -14,41 +14,20 @@ on:
   workflow_dispatch:
     inputs:
       sp_rtk_base_ref:
-        description: "sp-rtk-base ref whose Portal agent the tests run against"
-        default: main
+        description: "sp-rtk-base ref whose Portal agent the tests run against (empty: same-named branch if it exists, else main)"
+        required: false
+        default: ""
+        type: string
 
 permissions:
   contents: read
 
 jobs:
+  # The same lint and tests as every push and pull request (ci.yml).
   test:
-    runs-on: ubuntu-latest
-    # The seam-1 tests run the real Portal agent, a dev dependency on the
-    # sibling sp-rtk-base checkout (../sp-rtk-base), as in the meta repo.
-    defaults:
-      run:
-        working-directory: sp-rtk-portal
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          path: sp-rtk-portal
-      - uses: actions/checkout@v4
-        with:
-          repository: rodenj1/sp-rtk-base
-          ref: ${{ inputs.sp_rtk_base_ref || 'main' }}
-          path: sp-rtk-base
-      - uses: astral-sh/setup-uv@v6
-        with:
-          version: "0.11.14"
-      - run: uv sync --frozen
-      - run: uv run ruff check . && uv run ruff format --check .
-      - run: uv run playwright install --with-deps chromium firefox webkit
-      # Postgres from pgserver, the path the suite is proven on (the
-      # testcontainers path is untested). WebKit must run here, not skip.
-      - run: uv run pytest
-        env:
-          PORTAL_TEST_NO_DOCKER: "1"
-          PORTAL_TEST_REQUIRE_WEBKIT: "1"
+    uses: ./.github/workflows/ci.yml
+    with:
+      sp_rtk_base_ref: ${{ inputs.sp_rtk_base_ref || '' }}
 
   image:
     needs: test
