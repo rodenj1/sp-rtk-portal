@@ -45,3 +45,20 @@ main:has(.session-bar) { max-width: none; }
 .base-frame[hidden] { display: none; }
 .base-frame .frame-label { margin: 0; font-size: .8rem; color: #888; }
 .base-frame iframe { width: 100%; height: calc(100vh - 9rem); min-height: 24rem; border: 1px solid #8884; }
+.session-bar [hidden] { display: none !important; }
+.session-bar .trouble, .session-bar .still-there, .session-bar .paused { padding: .5rem .75rem; border-left: 3px solid; display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
+.session-bar .trouble p, .session-bar .still-there p, .session-bar .paused p { margin: 0; }
+.session-bar .didnt-wake { border-color: #d97706; background: #d977061a; }
+.session-bar .offline { border-color: #888; background: #8881; }
+.session-bar .still-there { border-color: var(--accent); background: #2563eb1a; }
+.session-bar .paused { border-color: #888; }
+.session-bar[data-state=didnt_wake] .status { color: #d97706; }
+.session-bar[data-state=offline] .status { color: #888; }
+.session-bar .presence { margin: 0; font-size: .9rem; }
+.session-bar .fullscreen { margin-left: auto; padding: .25rem .75rem; }
+.session-bar[data-fullscreen] > :not(.base-frame):not(.exit-fullscreen) { display: none; }
+.session-bar[data-fullscreen] .base-frame { position: fixed; inset: 0; z-index: 1; background: Canvas; }
+.session-bar[data-fullscreen] .frame-label { display: none; }
+.session-bar[data-fullscreen] .base-frame iframe { height: 100vh; min-height: 0; border: 0; }
+.session-bar .exit-fullscreen { position: fixed; right: .5rem; bottom: .5rem; z-index: 2; padding: .25rem .75rem; opacity: .85; }
+body:has(.session-bar[data-fullscreen]) .topbar { display: none; }
