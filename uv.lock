@@ -2061,7 +2061,7 @@ requires-dist = [
     { name = "pyubx2", specifier = ">=1.2.43" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sp-rtk-base-relay", specifier = ">=4.1.0,<5" },
-    { name = "sp-rtk-portal-protocol", git = "https://github.com/rodenj1/sp-rtk-portal?subdirectory=protocol&rev=2e8fa93da5cc96d0777239a530b1d6b116c788f1" },
+    { name = "sp-rtk-portal-protocol", git = "https://github.com/rodenj1/sp-rtk-portal?subdirectory=protocol&rev=3edee931a247162459650d0286a5a4dcb698b274" },
     { name = "uvicorn", specifier = ">=0.42.0" },
     { name = "websockets", specifier = ">=14" },
 ]
