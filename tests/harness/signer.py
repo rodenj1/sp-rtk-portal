@@ -60,14 +60,20 @@ class SigningAgent:
 
 @asynccontextmanager
 async def signing_agent(
-    portal: Portal, ip: str | None = AGENT_IP, *, peer: str = CLOUDFLARED
+    portal: Portal,
+    ip: str | None = AGENT_IP,
+    *,
+    peer: str = CLOUDFLARED,
+    real_ip: str | None = None,
 ) -> AsyncIterator[SigningAgent]:
     """An agent at public ``ip`` (``CF-Connecting-IP``; ``None``: no header)
-    whose requests reach the Portal from ``peer``."""
+    whose requests reach the Portal from ``peer``. ``real_ip``: an
+    ``X-Real-Ip`` header too, as Traefik adds on the LAN route."""
+    headers = {"CF-Connecting-IP": ip} if ip is not None else {}
+    if real_ip is not None:
+        headers["X-Real-Ip"] = real_ip
     transport = httpx.ASGITransport(app=portal.app, client=(peer, 40000))
     async with httpx.AsyncClient(
-        transport=transport,
-        base_url=portal.origin,
-        headers={"CF-Connecting-IP": ip} if ip is not None else {},
+        transport=transport, base_url=portal.origin, headers=headers
     ) as client:
         yield SigningAgent(portal, client)
