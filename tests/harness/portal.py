@@ -52,6 +52,7 @@ def test_settings(
         oidc_client_secret=authentik.client_secret,
         owner_emails=(PORTAL_OWNER,),
         tunnel_sweep_interval=0.01,
+        audit_purge_interval=0.05,
         smtp_host=smtp.host if smtp else "",
         smtp_port=smtp.port if smtp else 587,
         smtp_starttls=False,

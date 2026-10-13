@@ -64,6 +64,9 @@ class Settings:
     # Local access (ticket #97): the port of a base's own UI on its LAN.
     # Always 8080 in production; browser tests point it at a test server.
     base_ui_port: int = 8080
+    # Audit log (#99): how often (seconds, real time) entries older than 90
+    # days are deleted.
+    audit_purge_interval: float = 3600.0
 
     @property
     def oidc_issuer(self) -> str:

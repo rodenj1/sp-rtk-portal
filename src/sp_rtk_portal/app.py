@@ -31,6 +31,7 @@ from sp_rtk_portal.agent_api import routes as agent_routes
 from sp_rtk_portal.agent_api import settings_routes
 from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
 from sp_rtk_portal.audit import routes as audit_routes
+from sp_rtk_portal.audit.retention import Purger
 from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock, SystemClock
@@ -78,6 +79,7 @@ def create_app(
         doorbell=Doorbell(clock, tunnels),
     )
     ctx.base_events.on_unclaimed(sharing.unclaimed)
+    audit_purger = Purger(db, clock, settings.audit_purge_interval)
     ctx.account_events.on_password_changed(security.LogOutEverywhere(ctx))
     ctx.account_events.on_password_changed(review.review_due)
 
@@ -86,9 +88,11 @@ def create_app(
         await ctx.db.open()
         try:
             await ctx.tunnels.start()
+            audit_purger.start()
             try:
                 yield
             finally:
+                await audit_purger.stop()
                 await ctx.tunnels.stop()
         finally:
             await ctx.db.close()

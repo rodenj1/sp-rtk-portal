@@ -7,6 +7,7 @@ by row with ``pages.entries``.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import AsyncExitStack
 
@@ -154,3 +155,68 @@ async def test_every_listed_event_on_the_operators_bases_shows_on_their_page(
         "Signed in",
     ]
     assert rows[2]["when"] == when
+
+
+# --- What a Shared user sees -------------------------------------------------------
+
+
+async def test_a_shared_user_sees_only_their_own_entries(
+    portal: Portal,
+    operator: Browser,
+    base_id: str,
+    stack: AsyncExitStack,
+):
+    third = "third@example.com"
+    colleague = await sign_in(portal, stack, COLLEAGUE)
+    other = await sign_in(portal, stack, third, ip="192.0.2.44")
+    shares = f"/bases/{base_id}/shares"
+    for email in (COLLEAGUE, third):
+        assert (await operator.action(shares, {"email": email})).status_code == 200
+    for who in (operator, other, colleague):
+        assert (await who.action(f"/bases/{base_id}/remote")).status_code == 200
+    [sam] = await portal.query("SELECT id FROM account WHERE email = %s", COLLEAGUE)
+    removed = await operator.action(f"{shares}/{sam['id']}/remove")
+    assert removed.status_code == 200
+
+    page = await colleague.get("/audit")
+    rows = entries(page.text)
+
+    assert brief(rows) == [
+        ("remote_session_end", COLLEAGUE, BASE_NAME, COLLEAGUE_IP),
+        ("share_removed", "The Operator", BASE_NAME, ""),
+        ("remote_session_start", COLLEAGUE, BASE_NAME, COLLEAGUE_IP),
+        ("share_added", "The Operator", BASE_NAME, ""),
+        ("login", COLLEAGUE, "", COLLEAGUE_IP),
+    ]
+    assert rows[0]["what"] == "Remote session ended (Share removed)"
+    for leak in (OPERATOR, OPERATOR_IP, third, "192.0.2.44"):
+        assert leak not in page.text
+
+
+# --- Retention ----------------------------------------------------------------------
+
+
+async def until_gone(portal: Portal, kind_count: int, timeout: float = 5) -> None:
+    """Wait (real time) for the purge to leave ``kind_count`` entries."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    while len(await portal.query("SELECT id FROM audit_entry")) != kind_count:
+        assert asyncio.get_running_loop().time() < deadline, "not purged"
+        await asyncio.sleep(0.02)
+
+
+async def test_entries_older_than_90_days_are_purged(
+    portal: Portal, operator: Browser, clock: FakeClock, stack: AsyncExitStack
+):
+    clock.advance(days=60)
+    await sign_in(portal, stack, OPERATOR, ip="192.0.2.60")
+    clock.advance(days=30, minutes=1)
+
+    await until_gone(portal, 1)
+
+    later = await sign_in(portal, stack, OPERATOR, ip="192.0.2.90")
+    assert brief(await audit(later)) == [
+        ("login", OPERATOR, "", "192.0.2.90"),
+        ("login", OPERATOR, "", "192.0.2.60"),
+    ]
+    clock.advance(days=90, minutes=1)
+    await until_gone(portal, 0)
