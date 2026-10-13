@@ -27,6 +27,25 @@ OPERATOR = "Operator"
 SHARED_USER = "Shared user"
 
 
+def labels(base_name: str) -> dict[str, str]:
+    """What the bar says in each of its views: the page renders it, and
+    ``session.js`` reads it from the page (``data-labels``). ``paused`` is a
+    session the hard cap ended; ``remote_paused`` remote access paused on
+    the base. A new view adds its label here and its ``data-show`` block in
+    ``session.html``."""
+    return {
+        "waking": f"Waking {base_name}…",
+        "reconnecting": "Reconnecting…",
+        "didnt_wake": "Didn't wake",
+        "connected": "Connected",
+        "offline": "Offline",
+        "paused": "Session paused",
+        "remote_paused": "Remote access paused",
+        "ended": "Session ended",
+        "none": "Not connected",
+    }
+
+
 def last_seen(base: store.BaseSummary) -> str:
     return f"{utc(base.last_seen_at)} UTC" if base.last_seen_at else "never"
 

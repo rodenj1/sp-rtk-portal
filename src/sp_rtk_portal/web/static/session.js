@@ -21,18 +21,8 @@
   const box = field("frame-box");
   // Never add allow-same-origin, allow-top-navigation or allow-popups.
   const SANDBOX = "allow-scripts allow-forms allow-downloads";
-  // Keep in step with the labels in session.html.
-  const labels = {
-    waking: "Waking " + name + "…",
-    reconnecting: "Reconnecting…",
-    didnt_wake: "Didn't wake",
-    connected: "Connected",
-    offline: "Offline",
-    paused: "Session paused",
-    remote_paused: "Remote access paused",
-    ended: "Session ended",
-    none: "Not connected",
-  };
+  // The page carries each view's label (the server words them once).
+  const labels = JSON.parse(bar.dataset.labels || "{}");
 
   // Load the base's UI once Connected; keep it loaded (hidden) while
   // reconnecting after a tunnel drop, so its own scripts reconnect; unload it

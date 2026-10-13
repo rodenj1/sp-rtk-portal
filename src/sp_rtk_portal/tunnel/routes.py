@@ -117,8 +117,8 @@ async def session_bar(
         state = "offline"  # Open remotely Wakes nothing; Try anyway does
     else:
         state = "none"
-    # More states are decided here, and get a label and a ``data-show`` block
-    # in session.html / session.js.
+    # More states are decided here, and get a label in ``bar.labels`` and a
+    # ``data-show`` block in session.html.
     return render(
         request,
         "session.html",
@@ -126,6 +126,7 @@ async def session_bar(
         account=account,
         base=base,
         state=state,
+        labels=bar.labels(base.name),
         poll_interval=online.interval(config, base.metered),
         last_seen=bar.last_seen(base),
         wake_mode=online.wake_mode(base, config),

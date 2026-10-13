@@ -3,22 +3,10 @@
 {% block account %}<a href="/account">{{ account.email }}</a>{% endblock %}
 {% block main %}
 {#- One block per state, shown by its data-show (session.js keeps them in step
-    with the status channel). "paused" is an ended session whose reason is
-    the hard cap; "remote_paused" is remote access paused on the base
-    (#92). A new state adds a label here and in session.js, and its
-    own block. -#}
-{% set labels = {
-  "waking": "Waking " ~ base.name ~ "…",
-  "reconnecting": "Reconnecting…",
-  "didnt_wake": "Didn't wake",
-  "connected": "Connected",
-  "offline": "Offline",
-  "paused": "Session paused",
-  "remote_paused": "Remote access paused",
-  "ended": "Session ended",
-  "none": "Not connected",
-} %}
-<section class="session-bar" data-session-bar data-base="{{ base.id }}" data-name="{{ base.name }}" data-state="{{ state }}">
+    with the status channel). The labels come from tunnel.bar.labels, here and
+    for session.js (data-labels); a new state adds its label there and its
+    own block here. -#}
+<section class="session-bar" data-session-bar data-base="{{ base.id }}" data-name="{{ base.name }}" data-state="{{ state }}" data-labels="{{ labels | tojson | forceescape }}">
   <div class="bar-head">
     <a href="/" data-field="back">&larr; Your bases</a>
     <span class="name" data-field="name">{{ base.name }}</span>

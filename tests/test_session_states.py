@@ -10,6 +10,9 @@ that much time pass.
 from __future__ import annotations
 
 import asyncio
+import html
+import json
+import re
 from collections.abc import AsyncIterator
 
 import pytest
@@ -17,6 +20,7 @@ import pytest
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
 from .harness.fake_authentik import FakeAuthentik
+from .harness.pages import fields
 from .harness.portal import Browser, Portal
 from .harness.server import serving
 from .harness.session_bar import status_channel
@@ -66,6 +70,40 @@ async def colleague(portal: Portal, authentik: FakeAuthentik) -> AsyncIterator[B
 async def settle() -> None:
     """Give the sweeper (every 10 ms in tests) a chance to notice the time."""
     await asyncio.sleep(0.1)
+
+
+# --- Wording ------------------------------------------------------------------------
+
+STATES = {
+    "waking",
+    "reconnecting",
+    "didnt_wake",
+    "connected",
+    "offline",
+    "paused",
+    "remote_paused",
+    "ended",
+    "none",
+}
+
+
+async def test_the_bar_takes_every_state_label_from_the_page(
+    operator: Browser, agent: RunningAgent
+):
+    """One source for the wording: the server renders the labels into the
+    page, and session.js reads them there instead of keeping its own."""
+    base_id = await base_of(agent)
+
+    page = (await operator.get(f"/bases/{base_id}")).text
+    raw = re.search(r'data-labels="([^"]*)"', page)
+    assert raw, "no data-labels on the Session bar"
+    labels = json.loads(html.unescape(raw.group(1)))
+
+    assert set(labels) == STATES
+    assert labels["waking"] == "Waking North field…"
+    assert fields(page)["status"] == [labels["none"]]
+    script = (await operator.get("/static/session.js")).text
+    assert [label for label in labels.values() if f'"{label}"' in script] == []
 
 
 # --- Waking and Didn't wake -----------------------------------------------------
