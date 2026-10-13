@@ -135,6 +135,23 @@ async def test_an_unknown_email_looks_the_same_and_sends_nothing(
     assert authentik.outbox == []
 
 
+async def test_an_account_outside_portal_users_looks_the_same_and_sends_nothing(
+    browser: Browser, authentik: FakeAuthentik
+):
+    # E.g. a homelab admin: the public /recover must not reset their password,
+    # nor tell anyone the address is an Authentik account.
+    authentik.add_user(EMAIL, OLD, groups=["admins"])
+
+    resp = await browser.action(
+        "/recover",
+        {"email": EMAIL, "cf-turnstile-response": authentik.turnstile_token},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"next": "/recover/sent"}
+    assert authentik.outbox == []
+
+
 async def test_a_failed_or_missing_turnstile_blocks_recovery(
     browser: Browser, authentik: FakeAuthentik
 ):

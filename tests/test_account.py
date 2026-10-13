@@ -226,3 +226,35 @@ async def test_an_unknown_stage_in_password_change_fails_closed(
     assert resp.status_code == 502
     assert "location" not in resp.headers
     assert password_changes == []
+
+
+# --- an account that left portal-users (Authentik's deny stage) -----------------
+
+
+async def test_totp_setup_is_refused_once_the_account_leaves_portal_users(
+    signed_in: Browser, authentik: FakeAuthentik
+):
+    authentik.users[EMAIL].groups = ["admins"]
+
+    resp = await signed_in.action("/account/totp", {"password": PASSWORD})
+
+    # As for a wrong password: Authentik's own deny message never shows.
+    assert resp.status_code == 401
+    assert resp.json() == {"error": "Wrong password."}
+    assert not authentik.users[EMAIL].has_totp
+
+
+async def test_password_change_is_refused_once_the_account_leaves_portal_users(
+    signed_in: Browser, authentik: FakeAuthentik, password_changes
+):
+    authentik.users[EMAIL].groups = ["admins"]
+
+    resp = await signed_in.action(
+        "/account/password",
+        {"current_password": PASSWORD, "password": NEW, "password_repeat": NEW},
+    )
+
+    assert resp.status_code == 401
+    assert resp.json() == {"error": "Wrong password."}
+    assert authentik.users[EMAIL].password == PASSWORD
+    assert password_changes == []

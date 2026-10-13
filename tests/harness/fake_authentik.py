@@ -6,17 +6,23 @@ real one over HTTPS, so the Portal's whole headless path is exercised.
 
 Each Portal flow is a list of stages, mirroring the blueprint (#102):
 
-- ``portal-login``: identification (with password) → TOTP if the user has
-  one → login.
+- ``portal-login``: identification (with password) → deny unless in
+  ``portal-users`` → TOTP if the user has one → login.
 - ``portal-enrollment``: Turnstile → prompt (username, email, password,
   password_repeat) → user write (inactive, into ``portal-users``) →
   verification email (link to ``/verify?t=``) → login.
 - ``portal-recovery``: Turnstile → identification (email only, pretends unknown
-  users exist, so the email stage then denies access) → recovery email (link to ``/reset?t=``) → TOTP if the user has
-  one → prompt (password, password_repeat) → user write → login.
-- ``portal-totp-setup``: identification (with password) → TOTP setup.
-- ``portal-password-change``: identification (with password) → TOTP if the
-  user has one → prompt (password, password_repeat) → user write.
+  users exist, so the email stage then denies access) → deny unless in
+  ``portal-users`` → recovery email (link to ``/reset?t=``) → TOTP if the user
+  has one → prompt (password, password_repeat) → user write → login.
+- ``portal-totp-setup``: identification (with password) → deny unless in
+  ``portal-users`` → TOTP setup.
+- ``portal-password-change``: identification (with password) → deny unless in
+  ``portal-users`` → TOTP if the user has one → prompt (password,
+  password_repeat) → user write.
+
+The deny stage answers ``ak-stage-access-denied`` (``DENY_MESSAGE``) for a
+known user outside ``portal-users`` (e.g. a homelab admin) and ends the flow.
 
 Scripting:
 
@@ -54,6 +60,8 @@ from .clock import FakeClock
 SESSION_COOKIE = "authentik_session"
 PORTAL_ORIGIN = "https://sp-rtk-base.big-spray.com"
 PORTAL_USERS = "portal-users"
+# The blueprint's deny stage message. The Portal must never show it.
+DENY_MESSAGE = "This account can't use the SP RTK Portal."
 
 
 @dataclass
@@ -63,7 +71,9 @@ class FakeUser:
     totp: str | None = None
     email_verified: bool = True
     is_active: bool = True
-    groups: list[str] = field(default_factory=list)
+    # Accounts made by the Portal's sign-up are in portal-users; pass e.g.
+    # ``groups=["admins"]`` for one that isn't (a homelab admin).
+    groups: list[str] = field(default_factory=lambda: [PORTAL_USERS])
     totp_secret: str | None = None
     sub: str = field(default_factory=lambda: str(uuid.uuid4()))
     pk: int = field(default_factory=lambda: secrets.randbelow(10**6) + 1)
@@ -101,7 +111,12 @@ class _Grant:
 
 
 FLOWS: dict[str, list[str]] = {
-    "portal-login": ["identification+password", "validate", "login"],
+    "portal-login": [
+        "identification+password",
+        "deny-non-portal-users",
+        "validate",
+        "login",
+    ],
     "portal-enrollment": [
         "captcha",
         "prompt-enrollment",
@@ -112,15 +127,21 @@ FLOWS: dict[str, list[str]] = {
     "portal-recovery": [
         "captcha",
         "identification",
+        "deny-non-portal-users",
         "email-recovery",
         "validate",
         "prompt-password",
         "user-write",
         "login",
     ],
-    "portal-totp-setup": ["identification+password", "totp-setup"],
+    "portal-totp-setup": [
+        "identification+password",
+        "deny-non-portal-users",
+        "totp-setup",
+    ],
     "portal-password-change": [
         "identification+password",
+        "deny-non-portal-users",
         "validate",
         "prompt-password",
         "user-write",
@@ -288,15 +309,31 @@ class FakeAuthentik:
                 return {"component": "ak-stage-email", "flow_info": {}}
             case "user-write-new":
                 data = session.prompt
-                new = self.add_user(data["email"], data["password"], is_active=False)
+                new = self.add_user(
+                    data["email"],
+                    data["password"],
+                    is_active=False,
+                    groups=[PORTAL_USERS],
+                )
                 new.email_verified = False
-                new.groups.append(PORTAL_USERS)
                 session.user = new
                 return None
             case "user-write":
                 assert user is not None
                 user.password = session.prompt["password"]
                 return None
+            case "deny-non-portal-users":
+                # The blueprint's deny stage, bound with a negated portal-users
+                # group policy: it runs only for a known user outside the group
+                # (an unknown address in recovery has no saved user, so it's
+                # skipped). It ends the flow.
+                if user is None or PORTAL_USERS in user.groups:
+                    return None
+                session.index = len(FLOWS[session.slug])
+                return {
+                    "component": "ak-stage-access-denied",
+                    "error_message": DENY_MESSAGE,
+                }
             case "login":
                 session.authenticated = True
                 return None
