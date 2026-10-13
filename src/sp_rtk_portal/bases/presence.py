@@ -9,7 +9,7 @@ IP (``CF-Connecting-IP``) and with which protocol version.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import KW_ONLY, dataclass
 from datetime import datetime
 from typing import Any
 
@@ -22,6 +22,7 @@ from sp_rtk_portal.db import Connection
 class Seen:
     base_id: str
     metered: bool
+    _: KW_ONLY
     owner_account_id: int | None = None
     paused: bool = False
     was_paused: bool = False
@@ -88,7 +89,9 @@ async def checked_in(
         ),
     )
     row = await cur.fetchone()
-    return Seen(row["id"], row["metered"], row["last_doorbell_at"]) if row else None
+    if row is None:
+        return None
+    return Seen(row["id"], row["metered"], last_doorbell_at=row["last_doorbell_at"])
 
 
 @dataclass(frozen=True)
