@@ -26,6 +26,8 @@ from .fake_authentik import FakeAuthentik
 
 ORIGIN = "https://sp-rtk-base.big-spray.com"
 CLIENT_IP = "203.0.113.7"
+PORTAL_OWNER = "owner@example.com"
+"""The Portal owner's email (``Settings.owner_emails``)."""
 
 
 def test_settings(database_url: str, authentik: FakeAuthentik) -> Settings:
@@ -43,6 +45,7 @@ def test_settings(database_url: str, authentik: FakeAuthentik) -> Settings:
         oidc_app_slug=authentik.app_slug,
         oidc_client_id=authentik.client_id,
         oidc_client_secret=authentik.client_secret,
+        owner_emails=(PORTAL_OWNER,),
     )
 
 
@@ -110,12 +113,13 @@ class Portal:
 
     async def query(self, sql: str, *params: Any) -> list[dict[str, Any]]:
         """Read the database directly. Only for what the AC says is visible
-        "in the database" (e.g. audit entries before the audit page exists)."""
+        "in the database" (e.g. audit entries before the audit page exists),
+        or to play a compromised Portal by writing to it."""
         async with await psycopg.AsyncConnection.connect(
             self.settings.database_url, row_factory=dict_row
         ) as conn:
             cur = await conn.execute(sql, params)  # type: ignore[arg-type]
-            return await cur.fetchall()
+            return await cur.fetchall() if cur.description else []
 
 
 @asynccontextmanager

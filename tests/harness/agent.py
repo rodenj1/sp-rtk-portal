@@ -9,8 +9,11 @@ its edges are wired to the harness:
   Portal app, with the ``CF-Connecting-IP`` Cloudflare would add; the agent
   signs the public URL (``https://sp-rtk-base.big-spray.com/...``) as it
   would in production;
-- its clock is the Portal's fake clock, and its sleeps move that clock
-  forward (with a real tick, so a test can act between polls);
+- its clock is the Portal's fake clock, and its sleeps are virtual
+  (:class:`AgentTime`): nothing happens until the test lets time pass with
+  ``agent.run(seconds=...)`` or ``agent.until(state)``;
+- DNS (for a Doorbell host) is :class:`FakeDns`, and its LAN addresses are
+  ``agent.lan``;
 - its state directory is a temp dir, so a "restart" or a "reinstall" is a
   new ``PortalAgent`` over the same directory.
 
@@ -30,8 +33,10 @@ import httpx
 from sp_rtk_base.portal_agent.client import read_status, start_claim
 from sp_rtk_base.portal_agent.control import PortalAgent, serve
 from sp_rtk_base.portal_agent.protocol import AgentStatus
+from sp_rtk_portal_protocol import PROTOCOL_VERSION, LanAddress
 
-from .portal import Portal
+from .agent_time import AgentTime
+from .portal import Browser, Portal
 
 BASE_IP = "198.51.100.30"
 """The base's public IP, as Cloudflare reports it."""
@@ -40,13 +45,61 @@ BASE_IP = "198.51.100.30"
 class CloudflareTransport(httpx.AsyncBaseTransport):
     """What sits between a base and the Portal: adds ``CF-Connecting-IP``."""
 
-    def __init__(self, app: object, ip: str) -> None:
+    def __init__(self, app: object, ip: str, agent: RunningAgent) -> None:
         self._ip = ip
+        self._agent = agent
         self._inner = httpx.ASGITransport(app=app, client=(ip, 443))  # type: ignore[arg-type]
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
-        request.headers["CF-Connecting-IP"] = self._ip
-        return await self._inner.handle_async_request(request)
+        if not self._agent.reachable:
+            raise httpx.ConnectError("the base is offline", request=request)
+        self._agent.traffic.count_request(request)
+        request.headers["CF-Connecting-IP"] = self._agent.ip
+        response = await self._inner.handle_async_request(request)
+        await response.aread()
+        self._agent.traffic.count_response(response)
+        return response
+
+
+class Traffic:
+    """HTTP/1.1 bytes the agent sent and received (headers and bodies, as on
+    the wire inside TLS), for the polling-cost estimate."""
+
+    def __init__(self) -> None:
+        self.sent = self.received = self.requests = 0
+
+    @staticmethod
+    def _headers(headers: httpx.Headers) -> int:
+        return sum(len(k) + len(v) + 4 for k, v in headers.raw) + 2
+
+    def count_request(self, request: httpx.Request) -> None:
+        self.requests += 1
+        line = f"{request.method} {request.url.raw_path.decode()} HTTP/1.1\r\n"
+        self.sent += len(line) + self._headers(request.headers) + len(request.content)
+
+    def count_response(self, response: httpx.Response) -> None:
+        line = f"HTTP/1.1 {response.status_code} {response.reason_phrase}\r\n"
+        self.received += (
+            len(line) + self._headers(response.headers) + len(response.content)
+        )
+
+
+LAN = [
+    LanAddress(address="192.168.1.20", interface="eth0", primary=True),
+    LanAddress(address="10.8.0.4", interface="wlan0", primary=False),
+]
+
+
+class FakeDns:
+    """The agent's resolver: answers from ``records`` (else no such host)."""
+
+    def __init__(self) -> None:
+        self.records: dict[str, list[str]] = {}
+
+    async def __call__(self, host: str, port: int) -> list[str]:
+        if host not in self.records:
+            raise OSError(f"{host}: Name or service not known")
+        return list(self.records[host])
 
 
 class RunningAgent:
@@ -55,23 +108,32 @@ class RunningAgent:
         self.state_dir = state_dir
         self.sock = sock
         self.ip = ip
+        self.time = AgentTime(portal.clock)
+        self.dns = FakeDns()
+        self.lan: list[LanAddress] = list(LAN)
+        self.protocol_version = PROTOCOL_VERSION
+        """What the agent sends; raise it to "upgrade" sp-rtk-base."""
+        self.traffic = Traffic()
+        self.reachable = True
+        """``False``: the base is cut off (its requests fail to connect)."""
         self._agent: PortalAgent | None = None
         self._server: asyncio.Server | None = None
-
-    async def _sleep(self, seconds: float) -> None:
-        self.portal.clock.advance(seconds=seconds)
-        await asyncio.sleep(0.002)
 
     async def start(self) -> None:
         self._agent = PortalAgent(
             self.state_dir,
             portal_url=self.portal.origin,
-            transport=CloudflareTransport(self.portal.app, self.ip),
+            transport=CloudflareTransport(self.portal.app, self.ip, self),
             now=self.portal.clock.now,
-            sleep=self._sleep,
+            sleep=self.time.sleep,
             name="pi-north",
+            resolve=self.dns,
+            lan_addresses=lambda: list(self.lan),
+            protocol_version=self.protocol_version,
         )
         self._server = await serve(self.sock, self._agent)
+        if self._agent.status().state == "connected":
+            await self.time.until_asleep()  # its first Check-in and poll
 
     async def stop(self) -> None:
         if self._server is not None:
@@ -89,18 +151,40 @@ class RunningAgent:
         """The local page's "Connect to Portal"."""
         return await start_claim(self.sock)
 
+    async def claim(self, operator: Browser, name: str = "North field") -> AgentStatus:
+        """Connect to Portal, and ``operator`` approves the code: the base is
+        Claimed, has Checked in and polled once."""
+        pairing = await self.connect()
+        assert pairing.user_code, pairing
+        resp = await operator.action(
+            "/claim", {"code": pairing.user_code, "name": name}
+        )
+        assert resp.json() == {"next": "/"}, resp.text
+        return await self.until("connected")
+
     async def status(self) -> AgentStatus:
         return await read_status(self.sock)
 
+    async def run(self, **delta: float) -> None:
+        """Let virtual time pass (``agent.run(seconds=60)``); the agent polls
+        and Checks in on the way, exactly when it would."""
+        await self.time.run(**delta)
+
     async def until(self, state: str, timeout: float = 10) -> AgentStatus:
+        """Let virtual time run, sleep by sleep, until the agent is in
+        ``state``. Once ``connected``, its first poll has been answered."""
         deadline = asyncio.get_running_loop().time() + timeout
         while True:
             status = await self.status()
             if status.state == state:
+                if state == "connected":
+                    await self.time.until_asleep()
+                    status = await self.status()
                 return status
             if asyncio.get_running_loop().time() > deadline:
                 raise AssertionError(f"agent never reached {state}: {status}")
-            await asyncio.sleep(0.01)
+            if not await self.time.step():
+                await asyncio.sleep(0.01)
 
 
 @asynccontextmanager
