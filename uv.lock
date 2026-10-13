@@ -2061,7 +2061,7 @@ requires-dist = [
     { name = "pyubx2", specifier = ">=1.2.43" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "sp-rtk-base-relay", specifier = ">=4.1.0,<5" },
-    { name = "sp-rtk-portal-protocol", git = "https://github.com/rodenj1/sp-rtk-portal?subdirectory=protocol&rev=48e9a860be825d6cf2d03a7ffbd75ccab477d55c" },
+    { name = "sp-rtk-portal-protocol", editable = "protocol" },
     { name = "uvicorn", specifier = ">=0.42.0" },
     { name = "websockets", specifier = ">=14" },
 ]
@@ -2104,6 +2104,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "h11" },
     { name = "httpx" },
     { name = "jinja2" },
     { name = "psycopg", extra = ["binary"] },
@@ -2111,6 +2112,7 @@ dependencies = [
     { name = "segno" },
     { name = "sp-rtk-portal-protocol" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "wsproto" },
 ]
 
 [package.dev-dependencies]
@@ -2129,6 +2131,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
+    { name = "h11", specifier = ">=0.16" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
@@ -2136,6 +2139,7 @@ requires-dist = [
     { name = "segno", specifier = ">=1.6.6" },
     { name = "sp-rtk-portal-protocol", editable = "protocol" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "wsproto", specifier = ">=1.2" },
 ]
 
 [package.metadata.requires-dev]
@@ -2153,7 +2157,7 @@ dev = [
 
 [[package]]
 name = "sp-rtk-portal-protocol"
-version = "0.4.0"
+version = "0.7.0"
 source = { editable = "protocol" }
 dependencies = [
     { name = "cryptography" },

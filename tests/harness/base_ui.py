@@ -1,6 +1,12 @@
 """A stub playing sp-rtk-base's UI on ``:8080``: an HTTP catch-all and an
 echo websocket at ``/ws``, recording every request that reaches it.
 
+A few paths answer like a misbehaving or ordinary base would, for the base
+proxy's tests: ``/missing`` is a 404, ``/redirect`` a 302 to its own
+``http://localhost:8080/survey``, ``/set-cookie`` sets a cookie. Every
+answer also carries headers the proxy must override (its own CSP,
+``X-Frame-Options``, ``Access-Control-Allow-Origin``, ``Referrer-Policy``).
+
 The real agent is told this stub's port (its ``app_port``, a test-only
 argument: nothing from the Portal can change it), so "every stream reaches
 the :8080 stub and nothing else" is checked against what it saw.
@@ -14,11 +20,18 @@ from dataclasses import dataclass
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import PlainTextResponse
+from starlette.responses import PlainTextResponse, RedirectResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from .server import serving
+
+BASE_OWN_HEADERS = {
+    "Content-Security-Policy": "default-src *",
+    "X-Frame-Options": "DENY",
+    "Access-Control-Allow-Origin": "https://base.example",
+    "Referrer-Policy": "unsafe-url",
+}
 
 
 @dataclass
@@ -45,7 +58,7 @@ class BaseUi:
             ]
         )
 
-    async def _page(self, request: Request) -> PlainTextResponse:
+    async def _page(self, request: Request) -> Response:
         body = await request.body()
         self.seen.append(
             Seen(
@@ -56,7 +69,18 @@ class BaseUi:
                 body,
             )
         )
-        return PlainTextResponse(f"base page {request.url.path}")
+        path = request.url.path
+        response: Response
+        if path == "/missing":
+            response = PlainTextResponse("no such page", status_code=404)
+        elif path == "/redirect":
+            response = RedirectResponse("http://localhost:8080/survey", 302)
+        else:
+            response = PlainTextResponse(f"base page {path}")
+        if path == "/set-cookie":
+            response.set_cookie("base_cookie", "from-the-base")
+        response.headers.update(BASE_OWN_HEADERS)
+        return response
 
     async def _ws(self, websocket: WebSocket) -> None:
         self.seen.append(

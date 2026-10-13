@@ -2,7 +2,8 @@
 
 - Every Portal response carries a strict CSP with ``frame-ancestors 'none'``.
   The sign-up and recovery pages also allow Cloudflare Turnstile's script and
-  frame (``TURNSTILE_PAGES``), and nothing else does.
+  frame (``TURNSTILE_PAGES``), and nothing else does. The Session bar page
+  (``/bases/<id>``) may frame its own origin (the base proxy).
 - Every state-changing request (anything but GET/HEAD/OPTIONS) must have a JSON
   body, carry ``ACTION_HEADER``, and send an ``Origin`` equal to the Portal's.
   That makes requests from a sandboxed base frame (``Origin: null``) and from
@@ -15,6 +16,8 @@ Doorbell server's interface, authenticated by its bearer token.
 """
 
 from __future__ import annotations
+
+import re
 
 from starlette.datastructures import Headers, MutableHeaders
 from starlette.responses import JSONResponse
@@ -57,6 +60,11 @@ TURNSTILE_POLICY = _policy(
     {"script-src": TURNSTILE_ORIGIN, "frame-src": TURNSTILE_ORIGIN}
 )
 
+# The Session bar frames the base proxy (``/b/…``, on this origin) and
+# nothing else. Its own ``frame-ancestors`` stays ``'none'``.
+SESSION_BAR_PAGE = re.compile(r"/bases/[^/]+")
+SESSION_BAR_POLICY = _policy({"frame-src": "'self'"})
+
 PAGE_HEADERS = {
     "Content-Security-Policy": CONTENT_SECURITY_POLICY,
     "X-Content-Type-Options": "nosniff",
@@ -68,6 +76,8 @@ PAGE_HEADERS = {
 def page_headers(path: str) -> dict[str, str]:
     if path in TURNSTILE_PAGES:
         return {**PAGE_HEADERS, "Content-Security-Policy": TURNSTILE_POLICY}
+    if SESSION_BAR_PAGE.fullmatch(path):
+        return {**PAGE_HEADERS, "Content-Security-Policy": SESSION_BAR_POLICY}
     return PAGE_HEADERS
 
 
