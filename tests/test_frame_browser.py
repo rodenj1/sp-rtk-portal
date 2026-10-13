@@ -24,6 +24,7 @@ import json
 import os
 from collections.abc import AsyncIterator, Iterator
 
+import httpx
 import pytest
 from playwright.async_api import Browser, Frame, Page, async_playwright, expect
 from playwright.async_api import Error as PlaywrightError
@@ -31,7 +32,7 @@ from playwright.async_api import Error as PlaywrightError
 from .harness.clock import FakeClock
 from .harness.fake_authentik import FakeAuthentik
 from .harness.frame import SOCKET_CONNECTED, Remote, remote_frame
-from .harness.real_base import RealBase, real_base
+from .harness.real_base import RealBase, real_base, relay_destination
 
 SANDBOX = "allow-scripts allow-forms allow-downloads"
 
@@ -157,12 +158,28 @@ async def test_the_base_stays_live_in_the_frame_for_30_s(
     # The live Event log came through the frame's prefix, and still streams.
     prefix = await remote.frame_path()
     assert [s.status for s in remote.requests.to(f"{prefix}api/events/ws")] == [101]
-    text = await asyncio.to_thread(sp_rtk_base.start_relay)
-    try:
+    async with sp_rtk_base.relay() as text:
         log = remote.base.get_by_test_id("event-log")
         await expect(log.get_by_text(text).first).to_be_visible(timeout=15_000)
-    finally:
-        await asyncio.to_thread(sp_rtk_base.stop_relay)
+
+
+async def test_a_relay_an_earlier_test_left_behind_doesnt_break_the_next(
+    sp_rtk_base: RealBase,
+):
+    """The base is shared by every engine's run of this module: what a test
+    that failed partway through starting the Relay left behind must not make
+    the next one's start fail ("Destination ... already exists")."""
+    api = sp_rtk_base.url + "/api"
+    async with httpx.AsyncClient() as http:
+        resp = await http.post(f"{api}/destinations", json=relay_destination(1))
+        assert resp.status_code == 201, resp.text
+
+        async with sp_rtk_base.relay() as text:
+            assert text == "input.connected"
+            assert (await http.get(f"{api}/relay/status")).json()["running"]
+
+        assert not (await http.get(f"{api}/relay/status")).json()["running"]
+        assert (await http.get(f"{api}/destinations")).json()["destinations"] == []
 
 
 async def test_drawer_links_and_navigate_to_move_the_frame_not_the_page(

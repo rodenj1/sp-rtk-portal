@@ -9,14 +9,15 @@ this port as the base's ``app_port``. Mirrors sp-rtk-base's own e2e fixture.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator
-from contextlib import contextmanager
+from collections.abc import AsyncIterator, Iterator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,13 +31,25 @@ class RealBase:
     log: Path
     _source: socket.socket | None = None
 
-    def start_relay(self) -> str:
-        """Start the Relay from a TCP input; returns the text of the live
-        event this sends to every open Event log. ``stop_relay`` undoes it."""
+    @asynccontextmanager
+    async def relay(self) -> AsyncIterator[str]:
+        """The Relay running from a TCP input; yields the text of the live
+        event this sends to every open Event log.
+
+        The base is shared by every test of a module (and every browser
+        engine's run of it), so this leaves nothing behind, whatever
+        happens inside, and first clears anything an earlier test that
+        failed partway left: its destination would make this start fail
+        ("already exists")."""
+        await asyncio.to_thread(self._stop_relay)
+        try:
+            await asyncio.to_thread(self._start_relay)
+            yield "input.connected"
+        finally:
+            await asyncio.to_thread(self._stop_relay)
+
+    def _start_relay(self) -> None:
         self._source = socket.create_server(("127.0.0.1", 0))
-        with socket.socket() as probe:
-            probe.bind(("127.0.0.1", 0))
-            out_port = probe.getsockname()[1]
         api = self.url + "/api"
         resp = httpx.put(
             f"{api}/input",
@@ -51,20 +64,24 @@ class RealBase:
         )
         assert resp.status_code in (200, 201), resp.text
         resp = httpx.post(
-            f"{api}/destinations",
-            json={
-                "name": RELAY_DESTINATION,
-                "type": "tcp_server",
-                "enabled": True,
-                "filter": {"mode": "pass_all", "message_ids": []},
-                "config": {"host": "127.0.0.1", "port": out_port, "max_clients": 1},
-            },
-            timeout=5,
+            f"{api}/destinations", json=relay_destination(_free_port()), timeout=5
         )
         assert resp.status_code == 201, resp.text
         resp = httpx.post(f"{api}/relay/start", timeout=15)
         assert resp.status_code == 200, resp.text
-        return "input.connected"
+
+    def _stop_relay(self) -> None:
+        """Stopped, and the destination gone (checked: an error here is an
+        error, not something the next test trips over)."""
+        resp = httpx.post(f"{self.url}/api/relay/stop", timeout=15)
+        assert resp.status_code in (200, 409), resp.text  # 409: not running
+        resp = httpx.delete(
+            f"{self.url}/api/destinations/{RELAY_DESTINATION}", timeout=5
+        )
+        assert resp.status_code in (200, 404), resp.text  # 404: none left
+        if self._source is not None:
+            self._source.close()
+            self._source = None
 
     @contextmanager
     def connected_gps(self) -> Iterator[None]:
@@ -101,15 +118,19 @@ class RealBase:
         finally:
             httpx.delete(f"{self.url}/api/profiles/{name}", timeout=5)
 
-    def stop_relay(self) -> None:
-        httpx.post(f"{self.url}/api/relay/stop", timeout=15)
-        httpx.delete(f"{self.url}/api/destinations/{RELAY_DESTINATION}", timeout=5)
-        if self._source is not None:
-            self._source.close()
-            self._source = None
-
 
 RELAY_DESTINATION = "portal-proxy-test"
+
+
+def relay_destination(port: int) -> dict[str, object]:
+    """The TCP server destination :meth:`RealBase.relay` adds."""
+    return {
+        "name": RELAY_DESTINATION,
+        "type": "tcp_server",
+        "enabled": True,
+        "filter": {"mode": "pass_all", "message_ids": []},
+        "config": {"host": "127.0.0.1", "port": port, "max_clients": 1},
+    }
 
 
 def _free_port(host: str = "127.0.0.1") -> int:
