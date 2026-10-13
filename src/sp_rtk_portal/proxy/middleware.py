@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING
 
 from sp_rtk_portal_protocol import Stream
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from sp_rtk_portal.proxy import relay, rules
 from sp_rtk_portal.tunnel.broker import RemoteSession, TunnelBroker, TunnelDown
@@ -37,6 +37,16 @@ log = logging.getLogger(__name__)
 ENDED = "This Remote session has ended, or this link is not valid. Open the base again from the Portal."
 NOT_IN_FRAME = "Base pages open only inside the Portal's Session bar."
 UNREACHABLE = "The base is not connected right now."
+
+_ANSWERS = frozenset(
+    {
+        "http.response.start",
+        "websocket.accept",
+        "websocket.close",
+        "websocket.http.response.start",
+    }
+)
+"""Messages after which the browser has had its answer."""
 
 
 def frame_path(session: RemoteSession) -> str:
@@ -59,10 +69,30 @@ class BaseProxy:
         ):
             await self.app(scope, receive, send)
             return
-        if scope["type"] == "http":
-            await self._http(scope, receive, send)
-        else:
-            await self._websocket(scope, receive, send)
+        answered = False
+
+        async def tracked(message: Message) -> None:
+            nonlocal answered
+            if message["type"] in _ANSWERS:
+                answered = True
+            await send(message)
+
+        try:
+            if scope["type"] == "http":
+                await self._http(scope, receive, tracked)
+            else:
+                await self._websocket(scope, receive, tracked)
+        except Exception:
+            # Anything unforeseen (a tunnel that died mid-request, a bug)
+            # still answers with the sandbox headers: Starlette's own 500
+            # page would carry none.
+            log.exception("base proxy failed on %s", scope["path"])
+            if answered:
+                return
+            if scope["type"] == "http":
+                await self._refuse(send, 502, UNREACHABLE)
+            else:
+                await self._ws_refusal(scope, send)(502, UNREACHABLE)
 
     @property
     def _origin(self) -> str:

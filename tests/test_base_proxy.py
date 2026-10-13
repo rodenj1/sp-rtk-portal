@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 
 import httpx
 import pytest
+from sp_rtk_portal_protocol import Stream, TunnelClosed
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
@@ -313,6 +314,56 @@ async def test_a_proxy_error_is_stamped(
 
     assert resp.status_code == 502
     assert_stamped(resp)
+
+
+def tunnel_dies_after_the_next_stream_opens(
+    portal: Portal, base_id: str, failure: type[Exception]
+) -> None:
+    """The tunnel's websocket goes away just after a stream opens, before
+    the broker notices: the next frame sent down it fails.
+
+    Fault injection reaches into the broker: no public seam fails the
+    tunnel's websocket send at that moment."""
+    broker = portal.context.tunnels
+    original = broker.open_stream
+
+    async def open_stream(base: str) -> Stream:
+        stream = await original(base)
+        attached = broker._tunnels[base_id]  # pyright: ignore[reportPrivateUsage]
+
+        async def dead(data: bytes) -> None:
+            raise failure("the tunnel's websocket is gone")
+
+        attached.tunnel._send = dead  # pyright: ignore[reportPrivateUsage]
+        return stream
+
+    broker.open_stream = open_stream  # type: ignore[method-assign]
+
+
+@pytest.mark.parametrize("failure", [TunnelClosed, RuntimeError])
+async def test_a_tunnel_that_dies_before_the_answer_gets_a_stamped_502(
+    portal: Portal, frame: str, server: int, failure: type[Exception]
+):
+    """Starlette's own 500 page would carry no sandbox headers."""
+    tunnel_dies_after_the_next_stream_opens(portal, frame.split("/")[2], failure)
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"http://127.0.0.1:{server}{frame}", headers=FRAMED)
+
+    assert resp.status_code == 502
+    assert_stamped(resp)
+
+
+async def test_a_websocket_whose_tunnel_dies_gets_a_stamped_refusal(
+    portal: Portal, frame: str, server: int
+):
+    tunnel_dies_after_the_next_stream_opens(portal, frame.split("/")[2], TunnelClosed)
+
+    with pytest.raises(InvalidStatus) as refused:
+        await ws_open(server, frame + "ws")
+
+    assert refused.value.response.status_code == 502
+    assert_stamped(refused.value.response)
 
 
 # --- The Session bar page -------------------------------------------------------------
