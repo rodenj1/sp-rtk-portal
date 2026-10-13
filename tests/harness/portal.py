@@ -24,6 +24,7 @@ from sp_rtk_portal.web.security import ACTION_HEADER
 
 from .clock import FakeClock
 from .fake_authentik import FakeAuthentik
+from .fake_smtp import FakeSmtp
 
 ORIGIN = "https://sp-rtk-base.big-spray.com"
 CLIENT_IP = "203.0.113.7"
@@ -31,7 +32,9 @@ PORTAL_OWNER = "owner@example.com"
 """The Portal owner's email (``Settings.owner_emails``)."""
 
 
-def test_settings(database_url: str, authentik: FakeAuthentik) -> Settings:
+def test_settings(
+    database_url: str, authentik: FakeAuthentik, smtp: FakeSmtp | None = None
+) -> Settings:
     return Settings(
         database_url=database_url,
         public_origin=ORIGIN,
@@ -48,6 +51,10 @@ def test_settings(database_url: str, authentik: FakeAuthentik) -> Settings:
         oidc_client_secret=authentik.client_secret,
         owner_emails=(PORTAL_OWNER,),
         tunnel_sweep_interval=0.01,
+        smtp_host=smtp.host if smtp else "",
+        smtp_port=smtp.port if smtp else 587,
+        smtp_starttls=False,
+        smtp_from="Portal <portal@example.com>",
     )
 
 
@@ -91,8 +98,10 @@ class Portal:
         settings: Settings,
         clock: FakeClock,
         authentik: FakeAuthentik,
+        smtp: FakeSmtp | None = None,
     ) -> None:
         self.app = app
+        self.smtp = smtp
         self.settings = settings
         self.clock = clock
         self.authentik = authentik
@@ -130,12 +139,14 @@ async def running_portal(
     clock: FakeClock,
     authentik: FakeAuthentik,
     origin: str = ORIGIN,
+    smtp: FakeSmtp | None = None,
 ) -> AsyncIterator[Portal]:
     """The Portal, its lifespan running. ``origin``: its public origin (the
-    browser tests serve it at ``http://localhost:<port>``)."""
+    browser tests serve it at ``http://localhost:<port>``). ``smtp``: where
+    it sends email (none: it sends nothing)."""
     settings = dataclasses.replace(
-        test_settings(database_url, authentik), public_origin=origin
+        test_settings(database_url, authentik, smtp), public_origin=origin
     )
     app = create_app(settings, clock=clock, authentik_transport=authentik.transport())
     async with LifespanManager(app):
-        yield Portal(app, settings, clock, authentik)
+        yield Portal(app, settings, clock, authentik, smtp)
