@@ -1,0 +1,57 @@
+"""The client's IP address, when the Portal can believe it.
+
+Only ``cloudflared`` can reach the Portal (the Deployment's NetworkPolicy),
+and Cloudflare sets ``CF-Connecting-IP`` to the client's address. The app
+checks its side too: the header is read only on a request whose peer is in
+``Settings.trusted_proxies`` (the cloudflared pods). Any other request, or
+one without a valid header, is untrusted and has no client IP (``None``):
+per-IP rate limits key it with every other untrusted request (see
+:func:`rate_key`), possible-copy detection ignores it, and audit entries
+record no IP. The peer address itself is never used: behind cloudflared it
+is cloudflared's.
+"""
+
+from __future__ import annotations
+
+import ipaddress
+from functools import lru_cache
+
+from starlette.requests import HTTPConnection
+
+UNTRUSTED = "untrusted"
+"""The one rate-limit key every request without a client IP shares."""
+
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+
+def check_networks(cidrs: tuple[str, ...]) -> None:
+    """Raises ``ValueError`` on a setting that isn't a list of networks."""
+    _networks(cidrs)
+
+
+@lru_cache(maxsize=8)
+def _networks(cidrs: tuple[str, ...]) -> tuple[Network, ...]:
+    return tuple(ipaddress.ip_network(c, strict=False) for c in cidrs)
+
+
+def client_ip(conn: HTTPConnection) -> str | None:
+    peer = conn.client.host if conn.client else None
+    header = conn.headers.get("cf-connecting-ip")
+    if peer is None or header is None:
+        return None
+    try:
+        peer_ip = ipaddress.ip_address(peer)
+        ip = ipaddress.ip_address(header.strip())
+    except ValueError:
+        return None
+    if isinstance(peer_ip, ipaddress.IPv6Address) and peer_ip.ipv4_mapped:
+        peer_ip = peer_ip.ipv4_mapped
+    trusted = _networks(conn.app.state.portal.settings.trusted_proxies)
+    if not any(peer_ip in net for net in trusted):
+        return None
+    return str(ip)
+
+
+def rate_key(ip: str | None) -> str:
+    """What a per-IP rate limit counts against."""
+    return ip if ip is not None else UNTRUSTED

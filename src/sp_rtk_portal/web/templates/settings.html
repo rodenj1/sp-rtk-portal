@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block account %}
+<form class="account" data-action="/logout">
+  <a href="/">Your bases</a>
+  <span>{{ account.email }}</span>
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}
+{% block main %}
+<h1>Portal settings</h1>
+
+<section>
+  <h2>Agent config</h2>
+  <p>Every base's agent applies a new revision on its next poll. Times are in seconds.
+    Current revision: <strong data-field="config-revision">{{ revision }}</strong>.</p>
+  <dl class="facts">
+    {% for name, value in config.items() %}
+    <dt>{{ name }}</dt><dd data-field="config-{{ name }}">{{ '' if value is none else value }}</dd>
+    {% endfor %}
+  </dl>
+  <form data-action="/settings/agent-config">
+    {% for name, value in config.items() %}
+    <label>{{ name }} <input name="{{ name }}" value="{{ '' if value is none else value }}"></label>
+    {% endfor %}
+    <button type="submit">Save as revision {{ revision + 1 }}</button>
+  </form>
+</section>
+
+<section>
+  <h2>Notices</h2>
+  <p>Shown on every base in the list and on its local Portal page.</p>
+  <ul class="notices">
+    {% for notice in notices %}
+    <li>
+      <span data-field="notice" id="notice-{{ notice.id }}">{{ notice.text }}</span>
+      <form data-action="/settings/notices/{{ notice.id }}/delete" data-notice="{{ notice.id }}">
+        <button type="submit">Remove</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  <form data-action="/settings/notices">
+    <label>New notice <input name="text" maxlength="500" required></label>
+    <button type="submit">Add</button>
+  </form>
+</section>
+
+<section>
+  <h2>Latest sp-rtk-base release</h2>
+  <p>Bases on an older version show "update available".</p>
+  <form data-action="/settings/latest-release">
+    <label>Version <input name="version" value="{{ latest }}" required></label>
+    <button type="submit">Save</button>
+  </form>
+</section>
+<p class="error" data-error role="alert" hidden></p>
+{% endblock %}

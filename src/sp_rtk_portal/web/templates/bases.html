@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block head %}<script src="/static/local.js" defer></script>{% endblock %}
+{% block account %}
+<form class="account" data-action="/logout">
+  <a href="/account">{{ account.email }}</a>
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}
+{% block main %}
+<h1>Your bases</h1>
+{% if bases %}
+{% if bases | selectattr("local_access") | list %}
+<p class="detect" data-detect hidden>
+  <button type="button" data-field="detect">Detect bases on this network</button>
+  <span class="hint">Your browser will ask to let this page look for devices on your local network.</span>
+</p>
+{% endif %}
+<ul class="bases">
+  {% for card in bases %}
+  {% set base = card.base %}
+  <li data-base="{{ base.id }}" data-state="{{ card.state }}">
+    <div class="base-head">
+      <span class="name" data-field="name">{{ base.name }}</span>
+      {% if base.role == "shared" %}<span class="role" data-field="shared">Shared</span>{% endif %}
+      <span class="state state-{{ card.state }}" data-field="state">{{ card.state_label }}</span>
+      {% if base.last_seen_at %}
+      <span class="seen">last seen <time data-field="last-seen" datetime="{{ base.last_seen_at.isoformat() }}">{{ base.last_seen_at | utc }} UTC</time></span>
+      {% endif %}
+    </div>
+    <dl class="facts">
+      {% if base.software_version %}
+      <dt>Version</dt>
+      <dd><span data-field="version">sp-rtk-base {{ base.software_version }}</span>
+        {% if base.protocol_version %}· <span data-field="protocol">Protocol {{ base.protocol_version }}</span>{% endif %}
+        {% if card.update %}· <span class="info" data-field="update">sp-rtk-base {{ card.update }} available</span>{% endif %}
+      </dd>
+      {% endif %}
+      <dt>Wake</dt>
+      <dd><span data-field="wake-mode">{% if base.doorbell == "ok" %}Doorbell{% else %}Polling every {{ card.poll_interval }} s{% if base.metered %} (metered){% endif %}{% endif %}</span>
+        · <span data-field="doorbell">Doorbell: {{ base.doorbell }}</span></dd>
+      {% if base.lan_addresses %}
+      <dt>LAN</dt>
+      <dd><ul class="lan">
+        {% for a in base.lan_addresses %}
+        <li data-field="lan">{{ a.address }} ({{ a.interface }}{% if a.primary %}, primary{% endif %})</li>
+        {% endfor %}
+      </ul></dd>
+      {% endif %}
+      {% if base.public_ip %}
+      <dt>Public IP</dt>
+      <dd data-field="public-ip">{{ base.public_ip }}</dd>
+      {% endif %}
+    </dl>
+    {% if base.possible_copy_at %}
+    <p class="warning" data-field="possible-copy" role="alert">Possible copy: this base's key was used from {{ base.possible_copy_ips | join(" and ") }} in turns ({{ base.possible_copy_at | utc }} UTC), as if its SD card had been copied. Nothing was blocked.{% if base.role == "operator" %} If you didn't copy it, Un-claim the base and Claim it again from its own Portal page to give it a new key.{% endif %}</p>
+    {% endif %}
+    {% for text in notices %}
+    <p class="notice" data-field="notice">{{ text }}</p>
+    {% endfor %}
+    {% set lan = card.local_access %}
+    <div class="open-choices"{% if lan %} data-local="unconfirmed" data-identity="{{ lan.identity_url }}"{% endif %}>
+    {% if lan %}
+    <div class="open" data-local-show="confirmed" hidden>
+      <span class="local-here" data-field="local-confirmed">On this network</span>
+      <a class="button" data-field="go-local" href="{{ lan.url }}" rel="noreferrer">Open locally</a>
+      <form data-action="/bases/{{ base.id }}/remote">
+        <button type="submit" class="secondary" data-field="open-remotely-instead"{% if card.state == "paused" %} disabled title="Remote access is paused on the base; it can only be resumed there."{% endif %}>Open remotely instead</button>
+      </form>
+    </div>
+    {% endif %}
+    <div class="open" data-local-show="unconfirmed">
+      {% if lan and lan.first %}
+      <a class="button" data-field="open-locally" href="{{ lan.url }}" rel="noreferrer">Open locally ({{ lan.address }})</a>
+      {% endif %}
+      <form data-action="/bases/{{ base.id }}/remote">
+        <button type="submit" {% if lan and lan.first %}class="secondary" {% endif %}data-field="open-remotely"{% if card.state == "paused" %} disabled title="Remote access is paused on the base; it can only be resumed there."{% endif %}>Open remotely</button>
+      </form>
+      {% if lan and not lan.first %}
+      <a class="secondary-link" data-field="open-locally" href="{{ lan.url }}" rel="noreferrer">Open locally ({{ lan.address }})</a>
+      {% endif %}
+    </div>
+    </div>
+    {% if base.role == "operator" %}
+    <form class="metered" data-action="/bases/{{ base.id }}/metered">
+      <input type="hidden" name="metered" value="{{ 'false' if base.metered else 'true' }}">
+      <button type="submit">{% if base.metered %}Unmark metered{% else %}Mark metered (polls less often){% endif %}</button>
+    </form>
+    <a href="/bases/{{ base.id }}/shares" data-field="shares">Share</a>
+    <form class="unclaim" data-action="/bases/{{ base.id }}/unclaim"
+          data-confirm="Un-claim {{ base.name }}? The Portal forgets this base: its Shares and any Remote sessions end, and Claiming it again makes it a new base with a new address.">
+      <button type="submit" data-field="unclaim">Un-claim</button>
+    </form>
+    {% else %}
+    <form class="leave" data-action="/bases/{{ base.id }}/leave">
+      <button type="submit" data-field="leave">Leave this Share</button>
+    </form>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty">No bases yet. Claim one from its local web UI (Portal page).</p>
+{% endif %}
+<p><a href="/claim">Claim a base with a code</a></p>
+<p><a href="/audit" data-field="audit-log">Audit log</a>: who did what with your bases</p>
+<p class="error" data-error role="alert" hidden></p>
+{% endblock %}

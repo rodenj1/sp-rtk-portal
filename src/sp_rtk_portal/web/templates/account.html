@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block account %}
+<form class="account" data-action="/logout">
+  <a href="/">Your bases</a>
+  <span>{{ account.email }}</span>
+  <button type="submit">Sign out</button>
+</form>
+{% endblock %}
+{% block main %}
+<h1>Account</h1>
+<p>Signed in as <strong>{{ account.email }}</strong>.</p>
+
+<section>
+  <h2>Two-step sign-in</h2>
+  {% if totp is none %}
+  <p class="error">Two-step sign-in status is unavailable right now.</p>
+  {% elif totp %}
+  <p>Two-step sign-in is on: signing in needs a code from your authenticator app.</p>
+  <form data-action="/account/totp/disable" data-step="totp-off">
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <label>Current code <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" required></label>
+    <button type="submit">Turn off</button>
+  </form>
+  {% else %}
+  <p>Two-step sign-in is off. Turn it on so a stolen password isn't enough to reach your bases.</p>
+  <form data-action="/account/totp" data-step="totp-on">
+    <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+    <button type="submit">Turn on</button>
+  </form>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Password</h2>
+  <form data-action="/account/password" data-step="password">
+    <label>Current password <input name="current_password" type="password" autocomplete="current-password" required></label>
+    <label>New password <input name="password" type="password" autocomplete="new-password" required></label>
+    <label>New password again <input name="password_repeat" type="password" autocomplete="new-password" required></label>
+    <button type="submit">Change password</button>
+  </form>
+  <form data-action="/account/password/totp" data-step="totp" hidden>
+    <label>Authenticator code
+      <input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]*" required>
+    </label>
+    <button type="submit">Verify</button>
+  </form>
+</section>
+
+<section>
+  <h2>Activity</h2>
+  <p><a href="/audit" data-field="audit-log">Audit log</a>: sign-ins, Claims, Shares and Remote sessions over the last 90 days.</p>
+</section>
+
+<section>
+  <h2>Sessions</h2>
+  <p>Signs you out on every device, this one included, and ends any base you have open remotely.</p>
+  <form data-action="/account/logout-everywhere" data-confirm="Sign out on every device?">
+    <button type="submit">Log out everywhere</button>
+  </form>
+</section>
+
+<section>
+  <h2>Delete account</h2>
+  <p>Un-claims every base you Claimed and removes your Shares. You'll see which bases first.</p>
+  <p><a href="/account/delete" data-field="delete-account">Delete your account…</a></p>
+</section>
+<p class="error" data-error role="alert" hidden></p>
+{% endblock %}

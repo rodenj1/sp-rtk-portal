@@ -1,0 +1,5 @@
+{#- Open locally from the Session bar (Didn't wake, Offline): the base's own
+    UI at its primary LAN address, when it reported one (bases.local). -#}
+{% if local_access %}
+<a class="button" data-field="open-locally" href="{{ local_access.url }}" rel="noreferrer">Open locally ({{ local_access.address }})</a>
+{% endif %}

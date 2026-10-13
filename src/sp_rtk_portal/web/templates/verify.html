@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block main %}
+<section class="card">
+  <h1>Confirm your email</h1>
+  <form data-action="/verify" data-step="verify">
+    <input type="hidden" name="t" value="{{ token }}">
+    <button type="submit">Confirm my email</button>
+  </form>
+  <p class="error" data-error role="alert" hidden></p>
+</section>
+{% endblock %}

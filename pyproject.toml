@@ -1,0 +1,81 @@
+[project]
+name = "sp-rtk-portal"
+version = "0.1.0"
+description = "Hosted Portal for reaching sp-rtk-base base stations remotely"
+readme = "README.md"
+authors = [{ name = "John Roden", email = "rodenj@gmail.com" }]
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "httpx>=0.28",
+    "jinja2>=3.1",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
+    "sp-rtk-portal-protocol",
+    "uvicorn[standard]>=0.32",
+    "segno>=1.6.6",
+    # The base proxy speaks HTTP/1.1 and websockets over tunnel streams.
+    "h11>=0.16",
+    "wsproto>=1.2",
+]
+
+[project.scripts]
+sp-rtk-portal = "sp_rtk_portal.main:main"
+
+[build-system]
+requires = ["uv_build>=0.11,<0.13"]
+build-backend = "uv_build"
+
+[tool.uv.workspace]
+members = ["protocol"]
+
+[tool.uv.sources]
+sp-rtk-portal-protocol = { workspace = true }
+# The real Portal agent for the seam-1 tests: the sibling sp-rtk-base
+# submodule in the rtk_development meta repo (dev only; the image never has it).
+sp-rtk-base = { path = "../sp-rtk-base", editable = true }
+
+[dependency-groups]
+dev = [
+    "asgi-lifespan>=2.1",
+    "sp-rtk-base",
+    "pgserver>=0.1.4",
+    # Browser tests (Session bar). Same release as sp-rtk-base's e2e, so one
+    # set of installed browsers serves both.
+    "playwright>=1.60,<1.61",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "python-multipart>=0.0.32",
+    "ruff>=0.6",
+    "testcontainers[postgres]>=4.8",
+    "aiosmtpd>=1.4",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = ["--strict-markers", "--strict-config"]
+testpaths = ["tests", "protocol/tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+asyncio_default_test_loop_scope = "function"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "B", "UP", "N", "SIM", "RUF"]
+ignore = [
+    "E501",  # line length (handled by the formatter)
+    "N818",  # exceptions named for what happened, e.g. SignInRequired
+]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI handlers take `Depends(...)` defaults.
+extend-immutable-calls = ["fastapi.Depends"]
+
+[tool.uv]
+# sp-rtk-base pins the protocol package at a git commit; the Portal's tests
+# always use the workspace's own copy instead.
+override-dependencies = ["sp-rtk-portal-protocol"]

@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block account %}{% include "_nav.html" %}{% endblock %}
+{% block main %}
+<h1>Share {{ base.name }}</h1>
+<p>A Shared user can open this base remotely and use its whole web UI, but can't Share it
+or Un-claim it. You get an email every time a Share is created on your base.</p>
+<form class="share" data-action="/bases/{{ base.id }}/shares">
+  <label>Email <input type="email" name="email" maxlength="254" autocomplete="off" required></label>
+  <button type="submit" data-field="share">Share</button>
+</form>
+<p class="error" data-error role="alert" hidden></p>
+
+<h2>Shared users <small>({{ shared | length }} of {{ max_shared }})</small></h2>
+{% if shared %}
+<ul class="shares">
+  {% for s in shared %}
+  <li data-share="{{ s.account_id }}">
+    <span data-field="shared-user">{{ s.email }}</span>
+    <form class="inline" data-action="/bases/{{ base.id }}/shares/{{ s.account_id }}/remove">
+      <button type="submit">Remove</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty">Not Shared with anyone.</p>
+{% endif %}
+
+<h2>Pending shares <small>({{ pending | length }} of {{ max_pending }})</small></h2>
+{% if pending %}
+<ul class="shares">
+  {% for p in pending %}
+  <li data-pending-share="{{ p.id }}">
+    <span data-field="pending-share">{{ p.email }}</span>
+    <span class="seen">expires <time datetime="{{ p.expires_at.isoformat() }}">{{ p.expires_at | utc }} UTC</time></span>
+    <form class="inline" data-action="/bases/{{ base.id }}/pending-shares/{{ p.id }}/remove">
+      <button type="submit">Withdraw</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty">No Pending shares. Sharing with an email that has no Portal account yet
+creates one: it becomes a Share when they sign up, or expires after {{ pending_days }} days.</p>
+{% endif %}
+<p><a href="/">Back to your bases</a></p>
+{% endblock %}
