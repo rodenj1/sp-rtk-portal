@@ -226,6 +226,11 @@ class PollReply(Message):
     """The Operator marked the base metered: poll every
     ``config.metered_poll_interval`` instead of ``config.poll_interval``."""
     notices: list[Notice] = dataclasses.field(default_factory=list)
+    wake: str | None = None
+    """A Wake: a one-time nonce, and nothing else. The agent opens the tunnel
+    at its own (checked) tunnel URL with a GET signed by its base key whose
+    proof echoes this in its ``nonce`` claim. The Portal refuses any other
+    nonce, so a forged Wake can only cause a refused tunnel attempt."""
 
 
 @dataclass(frozen=True)

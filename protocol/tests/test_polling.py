@@ -115,3 +115,14 @@ def test_upgrade_required_names_the_minimum_version():
         "message": "Upgrade sp-rtk-base.",
     }
     assert UpgradeRequired.from_json(body).min_version == 2
+
+
+def test_a_poll_reply_carries_a_wake_nonce_only_when_there_is_one():
+    plain = PollReply(config=AgentConfig(revision=1))
+    woken = PollReply(config=AgentConfig(revision=1), wake="n0nce")
+
+    assert plain.wake is None
+    assert PollReply.from_json(plain.to_json()).wake is None
+    assert PollReply.from_json(woken.to_json()).wake == "n0nce"
+    # An older Portal's reply has no wake field at all.
+    assert PollReply.from_json({"config": {"revision": 1}}).wake is None

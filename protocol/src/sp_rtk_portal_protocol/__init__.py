@@ -38,6 +38,13 @@ from sp_rtk_portal_protocol.proof import (
     request_url,
     verify_proof,
 )
+from sp_rtk_portal_protocol.tunnel import (
+    FrameError,
+    Stream,
+    StreamClosed,
+    Tunnel,
+    TunnelClosed,
+)
 from sp_rtk_portal_protocol.version import (
     PROTOCOL_VERSION,
     VERSION_HEADER,
@@ -67,6 +74,7 @@ __all__ = [
     "ClaimToken",
     "Claimed",
     "ErrorReply",
+    "FrameError",
     "LanAddress",
     "Message",
     "MessageError",
@@ -75,6 +83,10 @@ __all__ = [
     "PollReply",
     "ProofError",
     "ReplayCache",
+    "Stream",
+    "StreamClosed",
+    "Tunnel",
+    "TunnelClosed",
     "UpgradeRequired",
     "VerifiedProof",
     "jwk_thumbprint",
