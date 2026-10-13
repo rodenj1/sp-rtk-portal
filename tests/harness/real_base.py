@@ -77,16 +77,24 @@ class RealBase:
 RELAY_DESTINATION = "portal-proxy-test"
 
 
-def _free_port() -> int:
+def _free_port(host: str = "127.0.0.1") -> int:
     with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
+        s.bind((host, 0))
         return int(s.getsockname()[1])
 
 
 @contextmanager
-def real_base() -> Iterator[RealBase]:
-    port = _free_port()
-    url = f"http://127.0.0.1:{port}"
+def real_base(
+    host: str = "127.0.0.1",
+    port: int | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> Iterator[RealBase]:
+    """``host`` and ``port``: where it listens (default: a free 127.0.0.1
+    port). Local access tests give each base its own loopback address,
+    standing in for its LAN address. ``extra_env``: more environment, e.g.
+    the Portal agent's state dir and the Portal's URL (identity endpoint)."""
+    port = port or _free_port(host)
+    url = f"http://{host}:{port}"
     with tempfile.TemporaryDirectory(prefix="real-base-") as d:
         home = Path(d)
         config = home / ".config" / "sp-rtk-base"
@@ -100,7 +108,7 @@ def real_base() -> Iterator[RealBase]:
         }
         env.update(
             HOME=str(home),
-            SP_RTK_BASE_HOST="127.0.0.1",
+            SP_RTK_BASE_HOST=host,
             SP_RTK_BASE_PORT=str(port),
             SP_RTK_BASE_CONFIG=str(config / "config.yaml"),
             SP_RTK_BASE_FAKE_GPS="1",
@@ -109,6 +117,7 @@ def real_base() -> Iterator[RealBase]:
             SP_RTK_BASE_FAKE_HOST_SETUP=str(home / "host-setup.json"),
             SP_RTK_BASE_PORTAL_AGENT_SOCKET=str(home / "no-agent.sock"),
         )
+        env.update(extra_env or {})
         log = home / "sp-rtk-base.log"
         with log.open("wb") as out:
             proc = subprocess.Popen(

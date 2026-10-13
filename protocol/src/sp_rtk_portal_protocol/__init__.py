@@ -9,6 +9,7 @@ from sp_rtk_portal_protocol.messages import (
     DOORBELL_OK,
     DOORBELL_UNAVAILABLE,
     POLL_PATH,
+    RELEASE_PATH,
     TUNNEL_PATH,
     AgentConfig,
     CheckIn,
@@ -24,6 +25,8 @@ from sp_rtk_portal_protocol.messages import (
     Notice,
     Poll,
     PollReply,
+    Release,
+    Released,
     UpgradeRequired,
 )
 from sp_rtk_portal_protocol.proof import (
@@ -63,6 +66,7 @@ __all__ = [
     "MAX_CLOCK_SKEW",
     "POLL_PATH",
     "PROTOCOL_VERSION",
+    "RELEASE_PATH",
     "TUNNEL_PATH",
     "VERSION_HEADER",
     "AgentConfig",
@@ -82,6 +86,8 @@ __all__ = [
     "Poll",
     "PollReply",
     "ProofError",
+    "Release",
+    "Released",
     "ReplayCache",
     "Stream",
     "StreamClosed",

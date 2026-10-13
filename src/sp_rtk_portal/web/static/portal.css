@@ -62,3 +62,9 @@ main:has(.session-bar) { max-width: none; }
 .session-bar[data-fullscreen] .base-frame iframe { height: 100vh; min-height: 0; border: 0; }
 .session-bar .exit-fullscreen { position: fixed; right: .5rem; bottom: .5rem; z-index: 2; padding: .25rem .75rem; opacity: .85; }
 body:has(.session-bar[data-fullscreen]) .topbar { display: none; }
+.bases .open { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
+.bases .open[hidden] { display: none; }
+.bases .open form { margin: 0; }
+a.button { display: inline-block; padding: .5rem 1rem; border: 1px solid var(--accent); border-radius: .25rem; background: var(--accent); color: #fff; text-decoration: none; }
+.bases .local-here { color: #15803d; font-weight: 600; }
+.detect .hint { color: #888; font-size: .9rem; }

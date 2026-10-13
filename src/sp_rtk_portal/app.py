@@ -25,6 +25,7 @@ from sp_rtk_portal.agent_api import routes as agent_routes
 from sp_rtk_portal.agent_api import settings_routes
 from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
 from sp_rtk_portal.bases import routes as base_routes
+from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.context import PortalContext
@@ -57,6 +58,7 @@ def create_app(
         login_attempts=PendingAttempts(settings.login_attempt_lifetime),
         flow_attempts=PendingAttempts(settings.login_attempt_lifetime),
         account_events=AccountEvents(),
+        base_events=BaseEvents(),
         agent_proofs=ReplayCache(),
         tunnels=TunnelBroker(settings, clock, db),
     )

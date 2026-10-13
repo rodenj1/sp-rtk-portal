@@ -43,6 +43,9 @@ class Settings:
     # The Session bar asks "Still there?" this long before the hard cap (#90).
     still_there_warning: timedelta = timedelta(minutes=5)
     tunnel_sweep_interval: float = 1.0
+    # Local access (ticket #97): the port of a base's own UI on its LAN.
+    # Always 8080 in production; browser tests point it at a test server.
+    base_ui_port: int = 8080
 
     @property
     def oidc_issuer(self) -> str:

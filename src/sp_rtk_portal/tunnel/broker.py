@@ -60,6 +60,7 @@ TOKEN_BYTES = 32
 
 LEFT = "left"
 HARD_CAP = "hard_cap"
+UN_CLAIM = "un_claim"
 
 WAKE_GRACE = timedelta(seconds=15)
 """How much longer than one poll interval a Wake may take before the bar says
@@ -463,6 +464,14 @@ class TunnelBroker:
         for session in matching:
             await self.end_session(session, reason, ip)
         return len(matching)
+
+    async def forget_base(self, base_id: str) -> None:
+        """The base was Un-claimed: end its Remote sessions (revoking their
+        tokens), drop any pending Wake and close its tunnel."""
+        await self.end_sessions(UN_CLAIM, base_id=base_id)
+        self._wakes.pop(base_id, None)
+        await self.close_tunnel(base_id)
+        await self._changed(base_id)
 
     # --- timeouts ------------------------------------------------------------
 
