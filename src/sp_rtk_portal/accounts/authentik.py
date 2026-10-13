@@ -48,6 +48,8 @@ ACCESS_DENIED = "ak-stage-access-denied"
 REDIRECT = "xak-flow-redirect"
 
 CAPTCHA_FAILED = "The captcha check failed. Please try again."
+# Hops back to the executor one request may take (each runs one stage).
+MAX_HOPS = 10
 
 
 class AuthentikFailedClosed(Exception):
@@ -402,21 +404,44 @@ class Authentik:
     async def _executor(
         self, attempt: FlowAttempt, method: str, body: dict[str, Any] | None = None
     ) -> dict[str, Any]:
+        """One answer (or a GET) to the executor, through Authentik's hops.
+
+        When a stage passes and more follow, Authentik answers with a hop
+        back to the executor: an HTTP 302 to the same executor URL, or a
+        ``xak-flow-redirect`` to it should the query string differ. Its own
+        client then GETs it, which runs the next stage. The Portal does the
+        same, and only for its own executor path: any other redirect is the
+        caller's to judge."""
         query = {"next": self._authorize_path(attempt), **attempt.query}
-        params = {"query": urlencode(query)}
+        path = f"/api/v3/flows/executor/{attempt.slug}/"
+        url = f"{path}?{urlencode({'query': urlencode(query)})}"
         async with self._client(attempt) as client:
-            resp = await client.request(
-                method,
-                f"/api/v3/flows/executor/{attempt.slug}/",
-                params=params,
-                json=body,
-            )
-        if resp.status_code != 200:
-            raise AuthentikFailedClosed(f"flow executor returned {resp.status_code}")
-        challenge = resp.json()
-        if not isinstance(challenge, dict):
-            raise AuthentikFailedClosed("flow executor returned a non-object")
-        return challenge
+            for _ in range(MAX_HOPS):
+                resp = await client.request(method, url, json=body)
+                if resp.status_code in (301, 302, 303, 307):
+                    url = self._hop(resp.headers.get("location", ""), path)
+                    method, body = "GET", None
+                    continue
+                if resp.status_code != 200:
+                    raise AuthentikFailedClosed(
+                        f"flow executor returned {resp.status_code}"
+                    )
+                challenge = resp.json()
+                if not isinstance(challenge, dict):
+                    raise AuthentikFailedClosed("flow executor returned a non-object")
+                if challenge.get("component") == REDIRECT and _is_executor(
+                    str(challenge.get("to", "")), path, self._settings.authentik_url
+                ):
+                    url = str(challenge["to"])
+                    method, body = "GET", None
+                    continue
+                return challenge
+        raise AuthentikFailedClosed("flow executor kept redirecting")
+
+    def _hop(self, location: str, path: str) -> str:
+        if not _is_executor(location, path, self._settings.authentik_url):
+            raise AuthentikFailedClosed(f"flow executor redirected to {location!r}")
+        return location
 
     # --- admin API ---------------------------------------------------------------
 
@@ -625,6 +650,17 @@ def _totp_setup(challenge: dict[str, Any]) -> TotpSetup:
     if parts.scheme != "otpauth" or parts.netloc != "totp" or not secret:
         raise AuthentikFailedClosed("TOTP setup without a usable otpauth URL")
     return TotpSetup(config_url=url, secret=secret)
+
+
+def _is_executor(location: str, path: str, authentik_url: str) -> bool:
+    """Whether ``location`` is this flow's executor on our Authentik."""
+    parts = urlsplit(location)
+    own = urlsplit(authentik_url)
+    same_host = not parts.netloc or (parts.scheme, parts.netloc) == (
+        own.scheme,
+        own.netloc,
+    )
+    return same_host and parts.path == path
 
 
 def _expect(challenge: dict[str, Any], component: str) -> None:

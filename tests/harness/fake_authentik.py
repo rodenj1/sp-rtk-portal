@@ -31,6 +31,12 @@ Scripting:
   Portal uses a real RFC 6238 secret instead (``totp_code(secret)``).
 - ``script_challenge({...})`` makes the next executor response that challenge
   instead of the real next stage, to test fail-closed handling.
+  ``script_redirect(url)`` makes the next hop a 302 to ``url`` instead.
+- Like Authentik, a stage that passes answers with a hop: an HTTP 302 back to
+  the executor (same query), which the client GETs to run the next stage. A
+  stage that needs no client (TOTP skipped, user write, login, user delete)
+  runs on that GET and hops again. Stages whose policy doesn't apply (the deny
+  stage, for portal-users) are skipped without a hop.
 - ``executor_requests`` records the headers of every executor call, e.g. to
   check that the client IP reaches Authentik; ``executor_calls`` records
   ``(method, slug)`` of each.
@@ -175,6 +181,7 @@ class FakeAuthentik:
         self.executor_calls: list[tuple[str, str]] = []
         self.api_calls: list[tuple[str, str]] = []
         self._scripted: list[dict[str, Any]] = []
+        self._scripted_redirects: list[str] = []
         self._sessions: dict[str, _FlowSession] = {}
         self._flow_tokens: dict[str, _FlowSession] = {}
         self._grants: dict[str, _Grant] = {}
@@ -203,6 +210,10 @@ class FakeAuthentik:
     def script_challenge(self, challenge: dict[str, Any]) -> None:
         self._scripted.append(challenge)
 
+    def script_redirect(self, location: str) -> None:
+        """Make the next hop an HTTP 302 to ``location`` instead."""
+        self._scripted_redirects.append(location)
+
     def totp_code(self, secret: str) -> str:
         """The code an authenticator app shows for ``secret`` right now."""
         return _totp(secret, int(self.clock.now().timestamp()))
@@ -223,10 +234,32 @@ class FakeAuthentik:
         app.delete("/api/v3/authenticators/admin/totp/{pk}/")(self._api_delete_totp)
         return app
 
-    def _respond(self, challenge: dict[str, Any]) -> JSONResponse:
+    def _respond(self, challenge: dict[str, Any]) -> Response:
+        """A challenge (200). A scripted one replaces it; hops aren't replaced."""
         if self._scripted:
             challenge = self._scripted.pop(0)
         return JSONResponse(challenge)
+
+    def _hop(self, request: Request) -> Response:
+        """What Authentik answers when a stage passed and more follow: a 302
+        back to the executor (same query), which its client then GETs."""
+        location = request.url.path
+        if request.url.query:
+            location += "?" + request.url.query
+        if self._scripted_redirects:
+            location = self._scripted_redirects.pop(0)
+        return self._redirect(location)
+
+    def _redirect(self, location: str) -> Response:
+        return Response(status_code=302, headers={"location": location})
+
+    def _next(self, session: _FlowSession, request: Request) -> Response:
+        """The answer to a request after ``_step``: the challenge it stopped
+        at, a hop if a stage passed and more follow, or the flow's end."""
+        challenge = self._step(session)
+        if challenge is _PASSED:
+            return self._hop(request)
+        return self._respond(challenge)
 
     async def _executor_get(self, slug: str, request: Request) -> Response:
         self.executor_requests.append(httpx.Headers(request.headers.items()))
@@ -246,10 +279,14 @@ class FakeAuthentik:
                 session.user.email_verified = True
             session.next_url = next_url
         else:
+            existing = self._sessions.get(request.cookies.get(SESSION_COOKIE, ""))
+            if existing is not None and existing.slug == slug:
+                # A GET in the same session (e.g. after a hop) carries on.
+                return self._next(existing, request)
             session = _FlowSession(slug=slug, next_url=next_url)
         session_id = secrets.token_urlsafe(16)
         self._sessions[session_id] = session
-        resp = self._respond(self._run(session))
+        resp = self._next(session, request)
         resp.set_cookie(SESSION_COOKIE, session_id, httponly=True, secure=True)
         return resp
 
@@ -267,19 +304,39 @@ class FakeAuthentik:
         if error is not None:
             return self._respond(error)
         session.index += 1
-        return self._respond(self._run(session))
+        if session.index >= len(stages):
+            return self._respond(_end(session))
+        return self._hop(request)
 
     # --- the stage machine ---------------------------------------------------
 
-    def _run(self, session: _FlowSession) -> dict[str, Any]:
-        """Run stages without a challenge until one needs the client."""
+    def _step(self, session: _FlowSession) -> dict[str, Any] | object:
+        """What one executor GET does, like Authentik's: skip stages whose
+        policy doesn't apply, then show the current stage's challenge, or run
+        a stage that needs no client (``_PASSED``: a hop follows, unless it
+        was the last stage and the flow ends)."""
         stages = FLOWS[session.slug]
         while session.index < len(stages):
-            challenge = self._challenge(session, stages[session.index])
+            stage = stages[session.index]
+            if self._skipped(session, stage):
+                session.index += 1
+                continue
+            challenge = self._challenge(session, stage)
             if challenge is not None:
                 return challenge
             session.index += 1
-        return {"component": "xak-flow-redirect", "to": session.next_url}
+            if session.index < len(stages):
+                return _PASSED
+        return _end(session)
+
+    def _skipped(self, session: _FlowSession, stage: str) -> bool:
+        """The deny stage's negated portal-users binding, evaluated when the
+        stage is reached: skipped (no hop) for everyone but a known user
+        outside the group. An unknown address in recovery has no saved user."""
+        user = session.user
+        return stage == "deny-non-portal-users" and (
+            user is None or PORTAL_USERS in user.groups
+        )
 
     def _challenge(self, session: _FlowSession, stage: str) -> dict[str, Any] | None:
         user = session.user
@@ -323,12 +380,8 @@ class FakeAuthentik:
                 user.password = session.prompt["password"]
                 return None
             case "deny-non-portal-users":
-                # The blueprint's deny stage, bound with a negated portal-users
-                # group policy: it runs only for a known user outside the group
-                # (an unknown address in recovery has no saved user, so it's
-                # skipped). It ends the flow.
-                if user is None or PORTAL_USERS in user.groups:
-                    return None
+                # Reached only by a known user outside portal-users (see
+                # ``_skipped``). It ends the flow.
                 session.index = len(FLOWS[session.slug])
                 return {
                     "component": "ak-stage-access-denied",
@@ -537,6 +590,13 @@ class FakeAuthentik:
 
 
 # --- challenges, shaped like Authentik's ------------------------------------------
+
+# A stage passed without the client (``_step``).
+_PASSED = object()
+
+
+def _end(session: _FlowSession) -> dict[str, Any]:
+    return {"component": "xak-flow-redirect", "to": session.next_url}
 
 
 def _error(key: str, text: str = "Failed to validate token") -> dict[str, Any]:
