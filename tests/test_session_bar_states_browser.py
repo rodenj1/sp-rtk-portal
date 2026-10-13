@@ -11,12 +11,9 @@ import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
 
 import pytest
 from playwright.async_api import Browser, Locator, Page, async_playwright, expect
-
-from sp_rtk_portal.bases import store
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import base_ui
@@ -274,7 +271,6 @@ async def test_presence_shows_who_else_is_connected_and_updates_when_they_leave(
     w: World,
     authentik: FakeAuthentik,
     browser_app: Browser,
-    monkeypatch: pytest.MonkeyPatch,
 ):
     await w.open_remotely()
     await w.connected()
@@ -290,22 +286,13 @@ async def test_presence_shows_who_else_is_connected_and_updates_when_they_leave(
         await sam.get_by_label("Password").fill(PASSWORD)
         await sam.get_by_role("button", name="Sign in").click()
         await sam.wait_for_url(f"{w.origin}/")
-        [row] = await w.portal.query("SELECT id FROM account WHERE email = %s", OTHER)
-        # Shares (#94) will let Sam reach the base and open it from his list;
-        # until then a stand-in Share lets him, and his Remote session is
-        # started through the broker directly.
-        owner_only = store.reachable_by
-
-        async def shared_with_sam(
-            conn: Any, account_id: int, base_id: str
-        ) -> store.BaseSummary | None:
-            if account_id == row["id"] and base_id == w.base_id:
-                return await store.by_id(conn, base_id)
-            return await owner_only(conn, account_id, base_id)
-
-        monkeypatch.setattr(store, "reachable_by", shared_with_sam)
-        await w.portal.context.tunnels.start_session(row["id"], w.base_id, None)
-        await sam.goto(f"{w.origin}/bases/{w.base_id}")
+        shared = await w.page.request.post(
+            f"{w.origin}/bases/{w.base_id}/shares",
+            data={"email": OTHER},
+            headers={"X-Portal-Action": "1", "Origin": w.origin},
+        )
+        assert shared.ok, await shared.text()
+        await w.open_remotely(sam)
 
         await expect(presence).to_have_text(f"Also connected: {OTHER} (Shared user)")
         await expect(w.locate("presence", sam)).to_have_text(

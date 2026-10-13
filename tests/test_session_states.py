@@ -256,14 +256,13 @@ async def test_presence_lists_the_other_connected_users_and_updates_when_they_le
     server: int,
 ):
     base_id = await base_of(agent)
-    [sam] = await portal.query("SELECT id FROM account WHERE email = %s", OTHER)
     await open_remotely(operator, base_id)
     async with status_channel(server, operator, base_id) as mine:
         await agent.run(seconds=20)
         assert (await mine.until("connected"))["present"] == []
-        # Shares (#94) will let Sam open it from his list; until then his
-        # Remote session is started through the broker directly.
-        await portal.context.tunnels.start_session(sam["id"], base_id, "203.0.113.99")
+        shared = await operator.action(f"/bases/{base_id}/shares", {"email": OTHER})
+        assert shared.status_code == 200, shared.text
+        await open_remotely(colleague, base_id)
         async with status_channel(server, colleague, base_id) as theirs:
             await eventually(
                 lambda: (
