@@ -20,6 +20,7 @@ launch check (README).
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from collections.abc import AsyncIterator, Iterator
 
@@ -29,7 +30,7 @@ from playwright.async_api import Error as PlaywrightError
 
 from .harness.clock import FakeClock
 from .harness.fake_authentik import FakeAuthentik
-from .harness.frame import Remote, remote_frame
+from .harness.frame import SOCKET_CONNECTED, Remote, remote_frame
 from .harness.real_base import RealBase, real_base
 
 SANDBOX = "allow-scripts allow-forms allow-downloads"
@@ -130,3 +131,81 @@ async def _until_same_layout(framed: Frame, direct: Page, path: str) -> None:
             return
         await asyncio.sleep(0.2)
     assert ours == theirs, f"{path} lays out differently in the frame"
+
+
+async def test_the_base_stays_live_in_the_frame_for_30_s(
+    remote: Remote, sp_rtk_base: RealBase
+):
+    frame = await remote.connected()
+    await frame.evaluate(
+        """() => {
+            window.__drops = 0;
+            window.__updates = 0;
+            window.socket.on("disconnect", () => window.__drops++);
+            window.socket.on("update", () => window.__updates++);
+        }"""
+    )
+
+    await asyncio.sleep(30)
+
+    assert await frame.evaluate(SOCKET_CONNECTED)
+    assert await frame.evaluate("() => window.__drops") == 0
+    assert await frame.evaluate("() => window.__updates") > 0
+    # The live Event log came through the frame's prefix, and still streams.
+    prefix = await remote.frame_path()
+    assert [s.status for s in remote.requests.to(f"{prefix}api/events/ws")] == [101]
+    text = await asyncio.to_thread(sp_rtk_base.start_relay)
+    try:
+        log = remote.base.get_by_test_id("event-log")
+        await expect(log.get_by_text(text).first).to_be_visible(timeout=15_000)
+    finally:
+        await asyncio.to_thread(sp_rtk_base.stop_relay)
+
+
+async def test_drawer_links_and_navigate_to_move_the_frame_not_the_page(
+    remote: Remote, sp_rtk_base: RealBase
+):
+    await remote.connected()
+    bar = remote.page.url
+    prefix = (await remote.frame_path()).rstrip("/")
+
+    await remote.base.locator("button:has(i:text('menu'))").first.click()
+    await remote.base.locator(f'a[href="{prefix}/survey"]').first.click()
+
+    await remote.until_at(await remote.url("/survey"))
+    await expect(remote.base.get_by_text("Survey-In").first).to_be_visible()
+    assert remote.page.url == bar
+
+    with sp_rtk_base.connected_gps():
+        await remote.go("/gps-config")
+        card = remote.base.locator(".fixed-position-card")
+        await expect(card).to_be_visible(timeout=15_000)
+
+        await card.locator(".fixed-position-survey-link").click()  # ui.navigate.to
+
+        await remote.until_at(await remote.url("/survey"))
+    assert remote.page.url == bar
+
+
+async def test_a_base_download_arrives_as_a_file(remote: Remote, sp_rtk_base: RealBase):
+    name = "portal-frame-export"
+    with sp_rtk_base.connected_gps(), sp_rtk_base.profile(name):
+        await remote.go("/gps-config")
+        base = remote.base
+        await expect(base.locator(".rtcm-cell-1005-UART1")).to_have_text(
+            "✓", timeout=15_000
+        )
+        await base.locator(".profile-picker").click()
+        # Not a real click: WebKit's headless build never finishes the menu's
+        # fade-in, so to Playwright the option is never clickable there.
+        await base.locator(f".profile-option-{name}").dispatch_event("click")
+        export = base.locator(".profile-export-icon")
+        await expect(export).to_be_visible(timeout=10_000)
+
+        async with remote.page.expect_download(timeout=15_000) as info:
+            await export.click()  # ui.download
+
+        download = await info.value
+        assert download.suggested_filename == f"{name}.json"
+        path = await download.path()
+        assert json.loads(path.read_text())["name"] == name
