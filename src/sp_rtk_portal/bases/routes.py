@@ -126,11 +126,15 @@ async def claim_page(
 ) -> HTMLResponse:
     user_code = claims.normalize_user_code(code)
     pending, problem = None, ""
-    if user_code:
+    wait = _guessing_wait(ctx, account) if user_code else None
+    if wait is not None:
+        problem = _too_many_wrong_codes(wait)
+    elif user_code:
         now = ctx.clock.now()
         async with ctx.db.connection() as conn:
             pending = await claims.find(conn, user_code, now)
         if pending is None:
+            _wrong_code(ctx, account)
             problem = claims.WRONG_CODE.format(code=claims.display_code(user_code))
         elif pending.used:
             problem = claims.USED
@@ -159,6 +163,9 @@ async def approve_claim(
     account: Account = Depends(current_account),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
+    wait = _guessing_wait(ctx, account)
+    if wait is not None:
+        return JSONResponse({"error": _too_many_wrong_codes(wait)}, status_code=429)
     try:
         async with ctx.db.connection() as conn:
             await claims.approve(
@@ -170,6 +177,42 @@ async def approve_claim(
                 ip=client_ip(request),
                 limit=ctx.settings.max_bases_per_account,
             )
+    except claims.WrongCode as refused:
+        _wrong_code(ctx, account)
+        return JSONResponse({"error": str(refused)}, status_code=400)
     except claims.ApprovalRefused as refused:
         return JSONResponse({"error": str(refused)}, status_code=400)
     return JSONResponse({"next": "/"})
+
+
+# --- Wrong codes (ticket #98) ---------------------------------------------------
+# A pairing code is 8 letters from 20 (2.56e10 codes), alive 10 minutes:
+# guessing is hopeless as long as guesses are few. Each account gets
+# ``wrong_codes_per_account`` an hour, and all accounts together
+# ``wrong_codes_overall``. Over either, nothing is looked up, not even a
+# right code, so a guesser learns nothing more.
+
+_ALL = "*"
+
+
+def _guessing_wait(ctx: PortalContext, account: Account) -> int | None:
+    s = ctx.settings
+    waits = [
+        ctx.limits.over("wrong-code", key, limit=limit, period=s.rate_limit_period)
+        for key, limit in (
+            (str(account.id), s.wrong_codes_per_account),
+            (_ALL, s.wrong_codes_overall),
+        )
+    ]
+    return max((w for w in waits if w is not None), default=None)
+
+
+def _wrong_code(ctx: PortalContext, account: Account) -> None:
+    for key in (str(account.id), _ALL):
+        ctx.limits.hit("wrong-code", key, period=ctx.settings.rate_limit_period)
+
+
+def _too_many_wrong_codes(wait: int) -> str:
+    minutes = max(1, -(-wait // 60))
+    unit = "minute" if minutes == 1 else "minutes"
+    return f"Too many wrong codes. Try again in {minutes} {unit}."

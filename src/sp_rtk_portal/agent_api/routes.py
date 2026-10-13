@@ -10,6 +10,7 @@ from sp_rtk_portal_protocol import (
     CLAIMS_PATH,
     POLL_PATH,
     RELEASE_PATH,
+    AgentConfig,
     CheckIn,
     CheckInReply,
     Claimed,
@@ -27,11 +28,13 @@ from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.agent_api.auth import (
     AgentRefused,
     AgentRequest,
+    AgentSlowDown,
     agent_request,
     reply,
 )
 from sp_rtk_portal.bases import claims, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
+from sp_rtk_portal.web.client_ip import rate_key
 
 router = APIRouter()
 
@@ -43,6 +46,14 @@ async def start_claim(
 ) -> JSONResponse:
     msg = req.message(ClaimStart)
     settings = ctx.settings
+    wait = ctx.limits.take(
+        "claim-start",
+        rate_key(req.ip),
+        limit=settings.claim_starts_per_ip,
+        period=settings.rate_limit_period,
+    )
+    if wait is not None:
+        raise AgentSlowDown(wait, "too many Claims started from this IP")
     try:
         async with ctx.db.connection() as conn:
             device_code, user_code = await claims.start(
@@ -99,6 +110,26 @@ def _unclaimed() -> AgentRefused:
     return AgentRefused(401, ErrorReply.UNCLAIMED, "no base has this key")
 
 
+def _poll_interval(config: AgentConfig, base: presence.Pace) -> int:
+    """The interval the base polls at: while a metered change is on its way
+    to the agent, the shorter of the two."""
+    return min(
+        online.interval(config, base.metered),
+        online.interval(config, base.polled_metered),
+    )
+
+
+def _keep_pace(ctx: PortalContext, kind: str, base_id: str, interval: int) -> None:
+    """429 for a poll or Check-in sooner than ``agent_min_spacing`` of its
+    interval after the last, once ``agent_burst`` early ones are spent."""
+    s = ctx.settings
+    wait = ctx.limits.spaced(
+        kind, base_id, spacing=s.agent_min_spacing * interval, burst=s.agent_burst
+    )
+    if wait is not None:
+        raise AgentSlowDown(wait, f"{kind} sooner than the agent config allows")
+
+
 @router.post(POLL_PATH)
 async def poll(
     req: AgentRequest = Depends(agent_request),
@@ -108,6 +139,11 @@ async def poll(
     flag, the notices, and a Wake's nonce when one is pending."""
     req.message(Poll)
     async with ctx.db.connection() as conn:
+        config = await agent_config.current(conn, ctx.settings)
+        base = await presence.pace(conn, req.proof.thumbprint)
+        if base is None:
+            raise _unclaimed()
+        _keep_pace(ctx, "poll", base.base_id, _poll_interval(config, base))
         seen = await presence.polled(
             conn,
             thumbprint=req.proof.thumbprint,
@@ -117,7 +153,6 @@ async def poll(
         )
         if seen is None:
             raise _unclaimed()
-        config = await agent_config.current(conn, ctx.settings)
         notices = await agent_config.wire_notices(conn)
     return reply(
         PollReply(
@@ -140,6 +175,11 @@ async def check_in(
     msg = req.message(CheckIn)
     now = ctx.clock.now()
     async with ctx.db.connection() as conn:
+        config = await agent_config.current(conn, ctx.settings)
+        base = await presence.pace(conn, req.proof.thumbprint)
+        if base is None:
+            raise _unclaimed()
+        _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
         seen = await presence.checked_in(
             conn,
             thumbprint=req.proof.thumbprint,
@@ -150,7 +190,6 @@ async def check_in(
         )
         if seen is None:
             raise _unclaimed()
-        config = await agent_config.current(conn, ctx.settings)
         notices = await agent_config.wire_notices(conn)
         ring_key = (
             await presence.ring_key(conn, seen.base_id)

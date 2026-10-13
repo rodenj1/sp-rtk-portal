@@ -265,8 +265,8 @@ async def test_polling_faster_than_the_interval_is_told_to_slow_down(
 async def test_the_26th_claim_on_an_account_is_refused_naming_the_limit(
     portal: Portal, operator: Browser
 ):
-    for n in range(25):
-        async with signing_agent(portal) as a:
+    for n in range(25):  # from 25 places: 10 Claim starts per IP an hour
+        async with signing_agent(portal, ip=f"198.51.100.{100 + n}") as a:
             code = (await start(a))["user_code"]
             assert (
                 await operator.action("/claim", {"code": code, "name": f"b{n}"})

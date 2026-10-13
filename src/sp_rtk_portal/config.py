@@ -62,6 +62,24 @@ class Settings:
     # Local access (ticket #97): the port of a base's own UI on its LAN.
     # Always 8080 in production; browser tests point it at a test server.
     base_ui_port: int = 8080
+    # Client IP (ticket #98): CF-Connecting-IP is believed only on requests
+    # whose peer is in one of these networks (the cloudflared pods). Empty:
+    # never believed, every request is untrusted (no client IP).
+    trusted_proxies: tuple[str, ...] = ()
+    # Rate limits (ticket #98). A poll or Check-in sooner than
+    # agent_min_spacing x its interval after the last is refused 429 once
+    # agent_burst early ones are used up (a restart, a resumed pause or a
+    # Doorbell change each bring one forward).
+    agent_min_spacing: float = 0.5
+    agent_burst: int = 3
+    claim_starts_per_ip: int = 10
+    wrong_codes_per_account: int = 10
+    wrong_codes_overall: int = 100
+    shares_per_operator: int = 20
+    rate_limit_period: timedelta = timedelta(hours=1)
+    # Possible copy: the same base key polling from two public IPs,
+    # interleaved within this long.
+    possible_copy_window: timedelta = timedelta(minutes=5)
 
     @property
     def oidc_issuer(self) -> str:
@@ -108,13 +126,28 @@ class Settings:
                     "smtp_port",
                     "max_shared_users_per_base",
                     "max_pending_shares_per_base",
+                    "agent_burst",
+                    "claim_starts_per_ip",
+                    "wrong_codes_per_account",
+                    "wrong_codes_overall",
+                    "shares_per_operator",
                 )
                 if f"PORTAL_{name.upper()}" in env
             },
             **(
+                {"agent_min_spacing": float(env["PORTAL_AGENT_MIN_SPACING"])}
+                if "PORTAL_AGENT_MIN_SPACING" in env
+                else {}
+            ),
+            **(
                 {"smtp_starttls": env["PORTAL_SMTP_STARTTLS"].lower() not in FALSE}
                 if "PORTAL_SMTP_STARTTLS" in env
                 else {}
+            ),
+            trusted_proxies=tuple(
+                n.strip()
+                for n in env.get("PORTAL_TRUSTED_PROXIES", "").split(",")
+                if n.strip()
             ),
             owner_emails=tuple(
                 e.strip().lower()

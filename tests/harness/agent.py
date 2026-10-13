@@ -36,6 +36,8 @@ import asyncio
 import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -48,7 +50,7 @@ from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
 from websockets.asyncio.client import connect as ws_connect
 
 from .agent_time import AgentTime
-from .portal import Browser, Portal
+from .portal import CLOUDFLARED, Browser, Portal
 
 BASE_IP = "198.51.100.30"
 """The base's public IP, as Cloudflare reports it."""
@@ -60,7 +62,7 @@ class CloudflareTransport(httpx.AsyncBaseTransport):
     def __init__(self, app: object, ip: str, agent: RunningAgent) -> None:
         self._ip = ip
         self._agent = agent
-        self._inner = httpx.ASGITransport(app=app, client=(ip, 443))  # type: ignore[arg-type]
+        self._inner = httpx.ASGITransport(app=app, client=(CLOUDFLARED, 443))  # type: ignore[arg-type]
 
     async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
         if not self._agent.reachable:
@@ -70,7 +72,25 @@ class CloudflareTransport(httpx.AsyncBaseTransport):
         response = await self._inner.handle_async_request(request)
         await response.aread()
         self._agent.traffic.count_response(response)
+        self._agent.requests.append(
+            Sent(
+                self._agent.portal.clock.now(),
+                request.url.path,
+                response.status_code,
+                response.headers.get("retry-after"),
+            )
+        )
         return response
+
+
+@dataclass(frozen=True)
+class Sent:
+    """One request the agent sent the Portal, and how it was answered."""
+
+    at: datetime
+    path: str
+    status: int
+    retry_after: str | None
 
 
 class Traffic:
@@ -179,6 +199,8 @@ class RunningAgent:
         self.protocol_version = PROTOCOL_VERSION
         """What the agent sends; raise it to "upgrade" sp-rtk-base."""
         self.traffic = Traffic()
+        self.requests: list[Sent] = []
+        """Every request the agent sent, in order."""
         self.reachable = True
         """``False``: the base is cut off (its requests fail to connect)."""
         self._agent: PortalAgent | None = None

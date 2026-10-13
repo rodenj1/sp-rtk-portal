@@ -34,10 +34,12 @@ from sp_rtk_portal.doorbell import routes as doorbell_routes
 from sp_rtk_portal.doorbell.bell import Doorbell
 from sp_rtk_portal.mail import Mailer
 from sp_rtk_portal.proxy.middleware import BaseProxy
+from sp_rtk_portal.ratelimit import Limiter
 from sp_rtk_portal.shares import routes as share_routes
 from sp_rtk_portal.shares import sharing
 from sp_rtk_portal.tunnel import routes as tunnel_routes
 from sp_rtk_portal.tunnel.broker import TunnelBroker
+from sp_rtk_portal.web.client_ip import check_networks
 from sp_rtk_portal.web.security import SAFE_METHODS, PortalSecurityMiddleware
 from sp_rtk_portal.web.templates import static_files
 
@@ -54,6 +56,7 @@ def create_app(
     clock, and a transport that reaches a fake Authentik in-process.
     """
     clock = clock or SystemClock()
+    check_networks(settings.trusted_proxies)  # a typo fails at startup
     db = Database(settings.database_url)
     tunnels = TunnelBroker(settings, clock, db)
     ctx = PortalContext(
@@ -69,6 +72,7 @@ def create_app(
         tunnels=tunnels,
         mailer=Mailer(settings),
         doorbell=Doorbell(clock, tunnels),
+        limits=Limiter(clock),
     )
     ctx.base_events.on_unclaimed(sharing.unclaimed)
 

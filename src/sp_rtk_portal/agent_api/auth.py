@@ -44,6 +44,15 @@ class AgentRefused(Exception):
         self.reply: Message = ErrorReply(error=error, error_description=description)
 
 
+class AgentSlowDown(AgentRefused):
+    """429: this agent (or its IP) asks too often. ``Retry-After`` says when
+    it may ask again."""
+
+    def __init__(self, retry_after: int, description: str) -> None:
+        super().__init__(429, ErrorReply.SLOW_DOWN, description)
+        self.retry_after = retry_after
+
+
 class AgentTooOld(AgentRefused):
     """426: the agent's protocol version is no longer supported."""
 
@@ -120,7 +129,10 @@ async def agent_request(
 
 async def agent_refused(request: Request, exc: Exception) -> Response:
     assert isinstance(exc, AgentRefused)
-    return reply(exc.reply, exc.status)
+    response = reply(exc.reply, exc.status)
+    if isinstance(exc, AgentSlowDown):
+        response.headers["Retry-After"] = str(exc.retry_after)
+    return response
 
 
 def reply(message: Message, status: int = 200) -> JSONResponse:

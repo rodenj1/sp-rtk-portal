@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 from sp_rtk_portal_protocol import PROTOCOL_VERSION, VERSION_HEADER, BaseKey
 
-from .portal import Portal
+from .portal import CLOUDFLARED, Portal
 
 AGENT_IP = "198.51.100.20"
 
@@ -60,12 +60,14 @@ class SigningAgent:
 
 @asynccontextmanager
 async def signing_agent(
-    portal: Portal, ip: str = AGENT_IP
+    portal: Portal, ip: str | None = AGENT_IP, *, peer: str = CLOUDFLARED
 ) -> AsyncIterator[SigningAgent]:
-    transport = httpx.ASGITransport(app=portal.app, client=(ip, 40000))
+    """An agent at public ``ip`` (``CF-Connecting-IP``; ``None``: no header)
+    whose requests reach the Portal from ``peer``."""
+    transport = httpx.ASGITransport(app=portal.app, client=(peer, 40000))
     async with httpx.AsyncClient(
         transport=transport,
         base_url=portal.origin,
-        headers={"CF-Connecting-IP": ip},
+        headers={"CF-Connecting-IP": ip} if ip is not None else {},
     ) as client:
         yield SigningAgent(portal, client)

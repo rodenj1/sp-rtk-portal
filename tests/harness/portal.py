@@ -29,6 +29,13 @@ from .fake_smtp import FakeSmtp
 
 ORIGIN = "https://sp-rtk-base.big-spray.com"
 CLIENT_IP = "203.0.113.7"
+CLOUDFLARED = "10.244.3.17"
+"""The peer address every request arrives from: a ``cloudflared`` pod (only
+``cloudflared`` can reach the Portal, which then believes the
+``CF-Connecting-IP`` it adds)."""
+TRUSTED_PROXIES = ("10.244.0.0/16", "127.0.0.1/32")
+"""``Settings.trusted_proxies`` in tests: the cluster's pod network, and
+loopback for the tests that serve the Portal over TCP."""
 PORTAL_OWNER = "owner@example.com"
 """The Portal owner's email (``Settings.owner_emails``)."""
 
@@ -57,6 +64,7 @@ def test_settings(
         smtp_starttls=False,
         smtp_from="Portal <portal@example.com>",
         doorbell_token=DOORBELL_TOKEN,
+        trusted_proxies=TRUSTED_PROXIES,
     )
 
 
@@ -115,12 +123,16 @@ class Portal:
         return self.app.state.portal
 
     @asynccontextmanager
-    async def browser(self, ip: str = CLIENT_IP) -> AsyncIterator[Browser]:
-        transport = httpx.ASGITransport(app=self.app, client=(ip, 50000))
+    async def browser(
+        self, ip: str | None = CLIENT_IP, *, peer: str = CLOUDFLARED
+    ) -> AsyncIterator[Browser]:
+        """A browser at ``ip`` (``CF-Connecting-IP``; ``None``: no header),
+        reaching the Portal from ``peer``."""
+        transport = httpx.ASGITransport(app=self.app, client=(peer, 50000))
         async with httpx.AsyncClient(
             transport=transport,
             base_url=self.origin,
-            headers={"CF-Connecting-IP": ip},
+            headers={"CF-Connecting-IP": ip} if ip is not None else {},
         ) as client:
             yield Browser(client)
 

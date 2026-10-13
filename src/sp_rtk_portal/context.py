@@ -21,6 +21,7 @@ from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
 from sp_rtk_portal.doorbell.bell import Doorbell
 from sp_rtk_portal.mail import Mailer
+from sp_rtk_portal.ratelimit import Limiter
 from sp_rtk_portal.tunnel.broker import TunnelBroker
 
 
@@ -45,6 +46,8 @@ class PortalContext:
     mailer: Mailer
     # Doorbell return paths and rings (process-local too).
     doorbell: Doorbell
+    # Rate-limit counters (process-local, #98).
+    limits: Limiter
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:

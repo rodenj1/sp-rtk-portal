@@ -49,6 +49,10 @@ class ApprovalRefused(Exception):
     """The Operator's approval can't Claim anything. The message says why."""
 
 
+class WrongCode(ApprovalRefused):
+    """No pairing has this code: a wrong code (or a guess)."""
+
+
 class KeyAlreadyClaimed(Exception):
     """A pairing started with a key that already belongs to a base."""
 
@@ -219,7 +223,7 @@ async def approve(
     )
     pairing: dict[str, Any] | None = await cur.fetchone()
     if pairing is None:
-        raise ApprovalRefused(WRONG_CODE.format(code=display_code(user_code)))
+        raise WrongCode(WRONG_CODE.format(code=display_code(user_code)))
     if pairing["base_id"] is not None:
         raise ApprovalRefused(USED)
     if now >= pairing["expires_at"]:

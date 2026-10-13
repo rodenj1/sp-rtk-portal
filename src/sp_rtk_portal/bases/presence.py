@@ -25,6 +25,28 @@ class Seen:
     last_doorbell_at: datetime | None = None
 
 
+@dataclass(frozen=True)
+class Pace:
+    """What sets how often a base may poll: the metered flag, and the one
+    its agent last heard (it polls at that until its next reply)."""
+
+    base_id: str
+    owner_account_id: int
+    metered: bool
+    polled_metered: bool
+
+
+async def pace(conn: Connection, thumbprint: str) -> Pace | None:
+    """The base with this key (``None``: no such base)."""
+    cur = await conn.execute(
+        "SELECT id AS base_id, owner_account_id, metered, polled_metered"
+        " FROM base WHERE key_thumbprint = %s",
+        (thumbprint,),
+    )
+    row = await cur.fetchone()
+    return Pace(**row) if row else None
+
+
 async def polled(
     conn: Connection,
     *,
