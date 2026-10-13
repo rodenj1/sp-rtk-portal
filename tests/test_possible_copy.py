@@ -240,3 +240,16 @@ async def test_ipv6_addresses_in_one_64_are_one_place(
     await agent.run(seconds=20)
     [flag] = (await _card(operator, agent))["possible-copy"]
     assert "2001:db8:7:8::1" in flag
+
+
+async def test_the_operator_sees_the_possible_copy_in_the_audit_log(
+    portal: Portal, operator: Browser, agent: RunningAgent
+):
+    portal.clock.advance(seconds=5)
+    await _copy(portal, agent)
+    await agent.run(seconds=20)
+
+    page = await operator.get("/audit")
+
+    assert "Possible copy" in page.text
+    assert COPY_IP in page.text

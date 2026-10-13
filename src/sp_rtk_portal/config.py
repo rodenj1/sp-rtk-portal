@@ -86,6 +86,9 @@ class Settings:
     # Possible copy: the same base key polling from two public IPs,
     # interleaved within this long.
     possible_copy_window: timedelta = timedelta(minutes=5)
+    # Audit log (#99): how often (seconds, real time) entries older than 90
+    # days are deleted.
+    audit_purge_interval: float = 3600.0
 
     @property
     def oidc_issuer(self) -> str:

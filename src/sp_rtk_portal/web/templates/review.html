@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block account %}{% include "_nav.html" %}{% endblock %}
+{% block main %}
+<h1>Review recent Shares</h1>
+<p>Your password was just changed. Anyone who knew the old one could have Shared your bases
+with themselves. These Shares and Pending shares were created from your account in the last
+{{ days }} days: remove any you don't recognise.</p>
+
+<h2>Shares</h2>
+{% if shares %}
+<ul class="shares">
+  {% for s in shares %}
+  <li>
+    <span data-field="review-share">{{ s.email }}</span>
+    on <strong>{{ s.base_name }}</strong>
+    <span class="seen">created <time datetime="{{ s.created_at.isoformat() }}">{{ s.created_at | utc }} UTC</time></span>
+    <form class="inline" data-action="/account/review/shares/{{ s.base_id }}/{{ s.account_id }}/remove">
+      <button type="submit">Remove</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty">No Shares were created from your account in the last {{ days }} days.</p>
+{% endif %}
+
+<h2>Pending shares</h2>
+{% if pending %}
+<ul class="shares">
+  {% for p in pending %}
+  <li>
+    <span data-field="review-pending-share">{{ p.email }}</span>
+    on <strong>{{ p.base_name }}</strong>
+    <span class="seen">created <time datetime="{{ p.created_at.isoformat() }}">{{ p.created_at | utc }} UTC</time></span>
+    <form class="inline" data-action="/account/review/pending-shares/{{ p.base_id }}/{{ p.id }}/remove">
+      <button type="submit">Withdraw</button>
+    </form>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty">No Pending shares were created from your account in the last {{ days }} days.</p>
+{% endif %}
+<p class="error" data-error role="alert" hidden></p>
+
+<form data-action="/account/review/done">
+  <button type="submit" data-field="review-done">Done, I've reviewed these</button>
+  <a href="/" data-field="review-skip">Skip for now</a>
+</form>
+<p>Skipped, this page shows again each time you sign in until you mark it reviewed.</p>
+{% endblock %}

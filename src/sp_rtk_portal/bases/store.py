@@ -30,6 +30,8 @@ class BaseSummary:
     possible_copy_at: datetime | None = None
     """When its key was first seen polling from two places (ticket #98)."""
     possible_copy_ips: list[str] = field(default_factory=list)
+    remote_paused: bool = False
+    """Remote access paused on site: Open remotely is refused."""
     role: Role = "operator"
     """How the reader reaches it: their own Claim, or a Share."""
 
@@ -37,8 +39,8 @@ class BaseSummary:
 _COLUMNS = (
     "id, name, software_version, last_seen_at, protocol_version, metered,"
     " polled_metered, lan_addresses, host(public_ip) AS public_ip, doorbell,"
-    " needs_upgrade, possible_copy_at, coalesce(possible_copy_ips, '{}')"
-    " AS possible_copy_ips"
+    " needs_upgrade, remote_paused, possible_copy_at,"
+    " coalesce(possible_copy_ips, '{}') AS possible_copy_ips"
 )
 _ROLE = (
     "CASE WHEN base.owner_account_id = %(account)s THEN 'operator'"

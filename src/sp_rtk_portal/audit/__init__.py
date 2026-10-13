@@ -22,12 +22,16 @@ CLAIM = "claim"
 UNCLAIM = "unclaim"
 REMOTE_SESSION_START = "remote_session_start"
 REMOTE_SESSION_END = "remote_session_end"
+REMOTE_ACCESS_PAUSED = "remote_access_paused"
+REMOTE_ACCESS_RESUMED = "remote_access_resumed"
 SHARE_ADDED = "share_added"
 SHARE_REMOVED = "share_removed"
 SHARE_LEFT = "share_left"
 PENDING_SHARE_CREATED = "pending_share_created"
 PENDING_SHARE_REMOVED = "pending_share_removed"
 POSSIBLE_COPY = "possible_copy"
+LOG_OUT_EVERYWHERE = "log_out_everywhere"
+ACCOUNT_DELETED = "account_deleted"
 
 
 async def record(

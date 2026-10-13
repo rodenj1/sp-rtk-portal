@@ -35,6 +35,11 @@ router = APIRouter()
 
 POLICY_VIOLATION = 1008
 
+PAUSED_MESSAGE = (
+    "Remote access is paused on this base. Someone at the base can resume it"
+    " on its local Portal page."
+)
+
 
 # --- Open remotely and the Session bar ----------------------------------------
 
@@ -60,6 +65,8 @@ async def open_remotely(
         config = await agent_config.current(conn, ctx.settings)
     if base is None:
         return JSONResponse({"error": "No such base."}, status_code=404)
+    if base.remote_paused:
+        return JSONResponse({"error": PAUSED_MESSAGE}, status_code=409)
     try_anyway = body is not None and body.try_anyway
     if (
         ctx.tunnels.session_for(account.id, base_id) is None
@@ -99,14 +106,19 @@ async def session_bar(
     if base is None:
         return HTMLResponse("No such base.", status_code=404)
     session = ctx.tunnels.session_for(account.id, base_id)
-    if session is not None:
+    base_state = online.state(base, config, ctx.clock.now())
+    if base_state == "paused":
+        # Remote access paused on site (#92): its sessions were ended and it
+        # ignores Wakes, so it would otherwise look like Didn't wake.
+        state = "remote_paused"
+    elif session is not None:
         state = ctx.tunnels.state(session)
-    elif online.state(base, config, ctx.clock.now()) == "offline":
+    elif base_state == "offline":
         state = "offline"  # Open remotely Wakes nothing; Try anyway does
     else:
         state = "none"
-    # More states (e.g. remote access paused, #92) are decided here, and get
-    # a label and a ``data-show`` block in session.html / session.js.
+    # More states are decided here, and get a label and a ``data-show`` block
+    # in session.html / session.js.
     return render(
         request,
         "session.html",

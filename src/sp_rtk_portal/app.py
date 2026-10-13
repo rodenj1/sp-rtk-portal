@@ -11,7 +11,13 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sp_rtk_portal_protocol import ReplayCache
 
 from sp_rtk_portal import health
-from sp_rtk_portal.accounts import account_page_routes, signup_routes
+from sp_rtk_portal.accounts import (
+    account_page_routes,
+    review,
+    security,
+    security_routes,
+    signup_routes,
+)
 from sp_rtk_portal.accounts import routes as account_routes
 from sp_rtk_portal.accounts.attempts import PendingAttempts
 from sp_rtk_portal.accounts.authentik import Authentik
@@ -24,6 +30,8 @@ from sp_rtk_portal.accounts.events import AccountEvents
 from sp_rtk_portal.agent_api import routes as agent_routes
 from sp_rtk_portal.agent_api import settings_routes
 from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
+from sp_rtk_portal.audit import routes as audit_routes
+from sp_rtk_portal.audit.retention import Purger
 from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.bases.copies import CopyWatch
 from sp_rtk_portal.bases.events import BaseEvents
@@ -77,15 +85,20 @@ def create_app(
         copies=CopyWatch(),
     )
     ctx.base_events.on_unclaimed(sharing.unclaimed)
+    audit_purger = Purger(db, clock, settings.audit_purge_interval)
+    ctx.account_events.on_password_changed(security.LogOutEverywhere(ctx))
+    ctx.account_events.on_password_changed(review.review_due)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await ctx.db.open()
         try:
             await ctx.tunnels.start()
+            audit_purger.start()
             try:
                 yield
             finally:
+                await audit_purger.stop()
                 await ctx.tunnels.stop()
         finally:
             await ctx.db.close()
@@ -107,12 +120,14 @@ def create_app(
     app.include_router(account_routes.router)
     app.include_router(signup_routes.router)
     app.include_router(account_page_routes.router)
+    app.include_router(security_routes.router)
     app.include_router(base_routes.router)
     app.include_router(agent_routes.router)
     app.include_router(settings_routes.router)
     app.include_router(tunnel_routes.router)
     app.include_router(share_routes.router)
     app.include_router(doorbell_routes.router)
+    app.include_router(audit_routes.router)
     return app
 
 

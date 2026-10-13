@@ -29,6 +29,7 @@
     connected: "Connected",
     offline: "Offline",
     paused: "Session paused",
+    remote_paused: "Remote access paused",
     ended: "Session ended",
     none: "Not connected",
   };
@@ -81,8 +82,10 @@
   }
 
   function update(msg) {
-    // A session the hard cap ended is shown as paused, with Reconnect.
-    const view = msg.state === "ended" && msg.reason === "hard_cap" ? "paused" : msg.state;
+    // A session the hard cap ended is shown as paused, with Reconnect; one
+    // ended because remote access was paused on the base says so (#92).
+    const endedAs = { hard_cap: "paused", paused: "remote_paused" };
+    const view = (msg.state === "ended" && endedAs[msg.reason]) || msg.state;
     show(view);
     frame(msg.state, msg.frame);
     const stillThere = Boolean(msg.still_there) && msg.state !== "ended";
@@ -94,7 +97,7 @@
   }
 
   // No Remote session (yet): nothing to follow.
-  if (["none", "ended", "offline"].includes(bar.dataset.state)) return;
+  if (["none", "ended", "offline", "remote_paused"].includes(bar.dataset.state)) return;
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   const channel = new WebSocket(
     scheme + "//" + location.host + "/bases/" + encodeURIComponent(bar.dataset.base) + "/session"

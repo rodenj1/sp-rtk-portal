@@ -115,7 +115,7 @@ async def flag(
             conn,
             at=now,
             kind=audit.POSSIBLE_COPY,
-            account_id=row["owner_account_id"],
+            account_id=None,  # nobody did it: the audit page says "The base"
             base_id=base_id,
             ip=ips[1],
             detail={"ips": list(ips)},
