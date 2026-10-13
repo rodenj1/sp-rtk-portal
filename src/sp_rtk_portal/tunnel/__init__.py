@@ -1,3 +1,4 @@
 """Tunnel broker: Wakes, tunnel termination, Remote sessions and their timeouts.
 
-Not built yet: see the spec's Modules section (rodenj1/rtk_development#82)."""
+``broker.TunnelBroker`` (``ctx.tunnels``) is the interface other modules use;
+``routes`` holds Open remotely, the Session bar and ``/agent/tunnel``."""
