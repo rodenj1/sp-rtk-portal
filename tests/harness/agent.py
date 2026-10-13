@@ -216,6 +216,7 @@ class RunningAgent:
     async def resume(self) -> AgentStatus:
         """The local page's "Resume remote access"."""
         return await resume(self.sock)
+
     async def unclaim(self) -> AgentStatus:
         """The local page's Un-claim."""
         return await unclaim(self.sock)
