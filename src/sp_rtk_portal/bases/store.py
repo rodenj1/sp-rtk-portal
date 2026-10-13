@@ -88,3 +88,10 @@ async def reachable_by(
     )
     row = await cur.fetchone()
     return BaseSummary(**row) if row else None
+
+
+async def by_id(conn: Connection, base_id: str) -> BaseSummary | None:
+    """``base_id``, whoever owns it (callers have checked access)."""
+    cur = await conn.execute(f"SELECT {_COLUMNS} FROM base WHERE id = %s", (base_id,))
+    row = await cur.fetchone()
+    return BaseSummary(**row) if row else None

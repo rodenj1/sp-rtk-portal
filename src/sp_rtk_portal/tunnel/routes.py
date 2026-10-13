@@ -9,6 +9,7 @@ import logging
 
 from fastapi import APIRouter, Depends, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 from sp_rtk_portal_protocol import (
     TUNNEL_PATH,
     VERSION_HEADER,
@@ -22,10 +23,9 @@ from starlette.websockets import WebSocketDisconnect
 from sp_rtk_portal.accounts.deps import current_account, websocket_account
 from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.agent_api import config as agent_config
-from sp_rtk_portal.bases import online, store
+from sp_rtk_portal.bases import local, online, store
 from sp_rtk_portal.context import PortalContext, portal_context
-from sp_rtk_portal.proxy.middleware import frame_path
-from sp_rtk_portal.tunnel.broker import RemoteSession, TunnelBroker
+from sp_rtk_portal.tunnel import bar
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.templates import render
 
@@ -39,20 +39,51 @@ POLICY_VIOLATION = 1008
 # --- Open remotely and the Session bar ----------------------------------------
 
 
+class OpenRemotely(BaseModel):
+    try_anyway: bool = False
+    """Wake the base even though it looks offline."""
+
+
 @router.post("/bases/{base_id}/remote")
 async def open_remotely(
     base_id: str,
     request: Request,
+    body: OpenRemotely | None = None,
     account: Account = Depends(current_account),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
-    """Start (or rejoin) the user's Remote session on the base, Waking it."""
+    """Open remotely, Retry, Try anyway and Reconnect: start (or rejoin) the
+    user's Remote session on the base, Waking it. An offline base is not
+    Woken unless the user chose Try anyway: the Session bar says Offline."""
     async with ctx.db.connection() as conn:
         base = await store.reachable_by(conn, account.id, base_id)
+        config = await agent_config.current(conn, ctx.settings)
     if base is None:
         return JSONResponse({"error": "No such base."}, status_code=404)
+    try_anyway = body is not None and body.try_anyway
+    if (
+        ctx.tunnels.session_for(account.id, base_id) is None
+        and not try_anyway
+        and online.state(base, config, ctx.clock.now()) == "offline"
+    ):
+        return JSONResponse({"next": f"/bases/{base_id}"})
     await ctx.tunnels.start_session(account.id, base_id, client_ip(request))
     return JSONResponse({"next": f"/bases/{base_id}"})
+
+
+@router.post("/bases/{base_id}/keep-going")
+async def keep_going(
+    base_id: str,
+    account: Account = Depends(current_account),
+    ctx: PortalContext = Depends(portal_context),
+) -> JSONResponse:
+    """Still there? -> Keep going: the user's Remote session on the base (all
+    their tabs) gets a fresh hard cap."""
+    session = ctx.tunnels.session_for(account.id, base_id)
+    if session is None:
+        return JSONResponse({"error": "No Remote session to keep."}, status_code=404)
+    await ctx.tunnels.keep_going(session)
+    return JSONResponse({})
 
 
 @router.get("/bases/{base_id}", response_class=HTMLResponse)
@@ -68,33 +99,38 @@ async def session_bar(
     if base is None:
         return HTMLResponse("No such base.", status_code=404)
     session = ctx.tunnels.session_for(account.id, base_id)
+    if session is not None:
+        state = ctx.tunnels.state(session)
+    elif online.state(base, config, ctx.clock.now()) == "offline":
+        state = "offline"  # Open remotely Wakes nothing; Try anyway does
+    else:
+        state = "none"
+    # More states (e.g. remote access paused, #92) are decided here, and get
+    # a label and a ``data-show`` block in session.html / session.js.
     return render(
         request,
         "session.html",
         title=base.name,
         account=account,
         base=base,
-        state=ctx.tunnels.state(session) if session else "none",
+        state=state,
         poll_interval=online.interval(config, base.metered),
+        last_seen=bar.last_seen(base),
+        wake_mode=online.wake_mode(base, config),
+        local_access=local.local_access(
+            base.lan_addresses,
+            base.public_ip,
+            client_ip(request),
+            port=ctx.settings.base_ui_port,
+        ),
     )
-
-
-def _status(broker: TunnelBroker, session: RemoteSession) -> dict[str, object]:
-    status: dict[str, object] = {
-        "state": broker.state(session),
-        "reason": session.end_reason,
-    }
-    if not session.ended:
-        status["frame"] = frame_path(session)
-    return status
 
 
 @router.websocket("/bases/{base_id}/session")
 async def session_channel(base_id: str, websocket: WebSocket) -> None:
     """The Session bar's status channel. While one is open, its user is
-    present on the Remote session; each change is sent as
-    ``{"state": "waking" | "connected" | "ended", "reason": ..., "frame":
-    "/b/<id>/s/<token>/"}`` (``frame`` until the session ends)."""
+    present on the Remote session; each change is sent as one
+    :func:`sp_rtk_portal.tunnel.bar.status` message."""
     ctx: PortalContext = websocket.app.state.portal
     account = await websocket_account(websocket, ctx)
     session = None
@@ -113,7 +149,7 @@ async def session_channel(base_id: str, websocket: WebSocket) -> None:
                 version = broker.version(base_id)
                 if version != seen:
                     seen = version
-                    await websocket.send_json(_status(broker, session))
+                    await websocket.send_json(await bar.status(ctx, session))
                 if session.ended:
                     await websocket.close()
                     return
