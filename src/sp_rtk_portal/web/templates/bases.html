@@ -20,7 +20,7 @@
   {% set base = card.base %}
   <li data-base="{{ base.id }}" data-state="{{ card.state }}">
     <div class="base-head">
-      <span class="name">{{ base.name }}</span>
+      <span class="name" data-field="name">{{ base.name }}</span>
       {% if base.role == "shared" %}<span class="role" data-field="shared">Shared</span>{% endif %}
       <span class="state state-{{ card.state }}" data-field="state">{{ card.state_label }}</span>
       {% if base.last_seen_at %}

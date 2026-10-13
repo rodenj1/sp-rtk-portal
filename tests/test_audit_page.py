@@ -251,7 +251,8 @@ async def test_an_entry_of_an_unknown_kind_still_shows_in_words(
     clock: FakeClock,
     stack: AsyncExitStack,
 ):
-    """A later ticket's kind (written here as that ticket would)."""
+    """A later ticket's kind (written here as that ticket would: no seam
+    writes a kind this Portal doesn't know)."""
     colleague = await sign_in(portal, stack, COLLEAGUE)
     shares = f"/bases/{base_id}/shares"
     assert (await operator.action(shares, {"email": COLLEAGUE})).status_code == 200

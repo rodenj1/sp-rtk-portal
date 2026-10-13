@@ -14,7 +14,7 @@ import pytest
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
-from .harness.pages import base_card
+from .harness.pages import base_card, entries, fields
 from .harness.portal import Browser, Portal
 
 EMAIL = "operator@example.com"
@@ -234,16 +234,15 @@ async def test_after_a_recovery_the_review_lists_recent_shares_with_one_click_re
         page = (await me.get("/account/review")).text
         assert COLLEAGUE not in page
         assert STRANGER not in page
-    shared = await portal.query(
-        "SELECT a.email FROM share s JOIN account a ON a.id = s.account_id"
-    )
-    assert shared == [{"email": OLD_COLLEAGUE}]
-    assert await portal.query("SELECT id FROM pending_share") == []
-    kinds = await portal.query(
-        "SELECT kind FROM audit_entry WHERE kind IN"
-        " ('share_removed', 'pending_share_removed') ORDER BY id"
-    )
-    assert [k["kind"] for k in kinds] == ["share_removed", "pending_share_removed"]
+        shares = fields((await me.get(f"/bases/{base_id}/shares")).text)
+        assert shares["shared-user"] == [OLD_COLLEAGUE]
+        assert "pending-share" not in shares
+        removed = [
+            e["@data-kind"]
+            for e in entries((await me.get("/audit")).text)
+            if e["@data-kind"] in ("share_removed", "pending_share_removed")
+        ]
+        assert removed == ["pending_share_removed", "share_removed"]  # newest first
 
 
 async def test_the_review_can_be_skipped_and_returns_at_each_login_until_seen(

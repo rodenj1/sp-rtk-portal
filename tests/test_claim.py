@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 import pytest
 
 from .harness.fake_authentik import FakeAuthentik
+from .harness.pages import base_card, entries
 from .harness.portal import Browser, Portal
 from .harness.signer import SigningAgent, signing_agent
 
@@ -40,6 +41,11 @@ async def start(agent: SigningAgent, name: str = "pi-north") -> dict:
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
+
+
+async def no_bases(operator: Browser) -> bool:
+    """The Operator's base list shows no base."""
+    return "data-base=" not in (await operator.get("/")).text
 
 
 async def poll(agent: SigningAgent, device_code: str, **kwargs):
@@ -99,11 +105,11 @@ async def test_approving_claims_the_base_for_the_operator(
     assert claimed["account"] == EMAIL
     assert re.fullmatch("[a-z2-7]{10}", claimed["base_id"])
 
+    # The Operator's list now shows it under its id.
+    listing = await operator.get("/")
+    assert base_card(listing.text, claimed["base_id"])["name"] == ["North field"]
+    # No page shows the stored key: read it in the database.
     [base] = await portal.query("SELECT * FROM base")
-    assert base["id"] == claimed["base_id"]
-    assert base["name"] == "North field"
-    [account] = await portal.query("SELECT id FROM account WHERE email = %s", EMAIL)
-    assert base["owner_account_id"] == account["id"]
     # Only the public key: exactly the agent's public JWK, nothing else.
     assert base["public_key"] == agent.key.public_jwk
     assert base["key_thumbprint"] == agent.key.thumbprint
@@ -116,10 +122,16 @@ async def test_the_claim_is_audited(
     await operator.action("/claim", {"code": started["user_code"], "name": "North"})
     claimed = (await poll(agent, started["device_code"])).json()
 
-    [entry] = await portal.query("SELECT * FROM audit_entry WHERE kind = 'claim'")
-    assert entry["base_id"] == claimed["base_id"]
-    assert entry["detail"]["name"] == "North"
-    assert str(entry["ip"]) == "203.0.113.7"
+    [entry] = [
+        e
+        for e in entries((await operator.get("/audit")).text)
+        if e["@data-kind"] == "claim"
+    ]
+    assert entry["what"] == "Claimed the base"
+    assert entry["base"] == "North"
+    assert entry["who"] == EMAIL
+    assert entry["ip"] == "203.0.113.7"
+    assert claimed["base_id"]
 
 
 async def test_the_code_can_be_typed_in_lower_case_with_a_dash(
@@ -154,7 +166,7 @@ async def test_a_wrong_code_fails_clearly_and_claims_nothing(
         "No base is waiting for code BBBB-BBBB. Check the code on the base's "
         "Portal page."
     )
-    assert await portal.query("SELECT * FROM base") == []
+    assert await no_bases(operator)
 
 
 async def test_an_expired_code_fails_clearly_and_claims_nothing(
@@ -172,7 +184,7 @@ async def test_an_expired_code_fails_clearly_and_claims_nothing(
         "That code has expired. Press Connect to Portal on the base again "
         "for a new one."
     )
-    assert await portal.query("SELECT * FROM base") == []
+    assert await no_bases(operator)
     expired = await poll(agent, started["device_code"])
     assert expired.json()["error"] == "expired_token"
 
@@ -280,4 +292,4 @@ async def test_the_26th_claim_on_an_account_is_refused_naming_the_limit(
     assert resp.json()["error"] == (
         "You already have 25 bases, the most one account can Claim."
     )
-    assert len(await portal.query("SELECT * FROM base")) == 25
+    assert (await operator.get("/")).text.count("data-base=") == 25

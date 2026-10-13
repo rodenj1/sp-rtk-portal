@@ -16,7 +16,13 @@ from datetime import datetime, timedelta
 
 import httpx
 import pytest
-from sp_rtk_portal_protocol import BaseKey, HeardKeepalive, KeepalivesReport, doorbell
+from sp_rtk_portal_protocol import (
+    CHECK_IN_PATH,
+    BaseKey,
+    HeardKeepalive,
+    KeepalivesReport,
+    doorbell,
+)
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
@@ -79,6 +85,11 @@ async def agent(
         await a.claim(operator)
         wire(a, bell)
         yield a
+
+
+def check_ins(agent: RunningAgent) -> list[object]:
+    """The Check-ins the agent has sent so far."""
+    return [r for r in agent.requests if r.path == CHECK_IN_PATH]
 
 
 async def _card(operator: Browser, agent: RunningAgent) -> dict[str, list[str]]:
@@ -231,15 +242,12 @@ async def test_a_doorbell_base_goes_offline_after_3_missed_keepalives(
 ):
     await _on_the_doorbell(agent, owner)
     # Just after a Check-in, so the next one is 5 min away.
-    [before] = await portal.query("SELECT last_check_in_at FROM base")
-    while True:
+    before = len(check_ins(agent))
+    while len(check_ins(agent)) == before:
         await agent.time.step()
-        [now] = await portal.query("SELECT last_check_in_at FROM base")
-        if now != before:
-            break
     bell.deaf = True  # the Doorbell server goes down
-    [row] = await portal.query("SELECT last_seen_at FROM base")
-    last: datetime = row["last_seen_at"]
+    [seen] = (await _card(operator, agent))["last-seen@datetime"]
+    last = datetime.fromisoformat(seen)
 
     # 3 keepalive beats (20 s + up to 5 s jitter) = 75 s: a polling base
     # would be offline after 60 s.

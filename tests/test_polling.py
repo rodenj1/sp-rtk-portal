@@ -288,7 +288,8 @@ async def test_only_the_portal_owner_reaches_the_settings(
 async def test_a_tunnel_url_on_another_host_is_ignored_and_logged(
     portal: Portal, agent: RunningAgent, caplog
 ):
-    # A compromised Portal: the bad value goes straight into its database.
+    # A compromised Portal: the bad value goes straight into its database
+    # (no seam: /settings refuses a tunnel URL on another host).
     await portal.query(
         "INSERT INTO agent_config (revision, config, created_at) VALUES (7, %s, %s)",
         '{"revision": 7, "tunnel_url": "wss://evil.example.com/agent/tunnel"}',
