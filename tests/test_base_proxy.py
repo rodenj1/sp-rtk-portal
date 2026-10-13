@@ -282,6 +282,18 @@ async def test_a_set_cookie_from_the_base_never_reaches_the_browser(
     assert "base_cookie" not in operator.cookies
 
 
+async def test_a_base_cannot_clear_the_portals_cookies_or_storage(
+    operator: Browser, frame: str
+):
+    """``Clear-Site-Data`` acts on the whole origin, the Portal's included:
+    a hostile base could sign the user out of the Portal."""
+    resp = await operator.get(frame + "clear-site-data", headers=FRAMED)
+
+    assert resp.status_code == 200
+    assert "clear-site-data" not in resp.headers
+    assert_stamped(resp)
+
+
 # --- Headers on every response class ------------------------------------------------
 
 

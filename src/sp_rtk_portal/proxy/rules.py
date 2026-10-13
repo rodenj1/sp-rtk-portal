@@ -170,6 +170,8 @@ _NEVER_RETURNED = frozenset(
         b"upgrade",
         b"set-cookie",
         b"set-cookie2",
+        # acts on the whole origin: a base could sign the user out of the Portal
+        b"clear-site-data",
         # the Portal's own, stamped below
         b"content-security-policy",
         b"content-security-policy-report-only",

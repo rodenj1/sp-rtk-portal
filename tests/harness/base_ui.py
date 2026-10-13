@@ -3,8 +3,9 @@ echo websocket at ``/ws``, recording every request that reaches it.
 
 A few paths answer like a misbehaving or ordinary base would, for the base
 proxy's tests: ``/missing`` is a 404, ``/redirect`` a 302 to its own
-``http://localhost:8080/survey``, ``/set-cookie`` sets a cookie. Every
-answer also carries headers the proxy must override (its own CSP,
+``http://localhost:8080/survey``, ``/set-cookie`` sets a cookie,
+``/clear-site-data`` asks the browser to wipe the origin's cookies and
+storage. Every answer also carries headers the proxy must override (its own CSP,
 ``X-Frame-Options``, ``Access-Control-Allow-Origin``, ``Referrer-Policy``).
 
 The real agent is told this stub's port (its ``app_port``, a test-only
@@ -79,6 +80,8 @@ class BaseUi:
             response = PlainTextResponse(f"base page {path}")
         if path == "/set-cookie":
             response.set_cookie("base_cookie", "from-the-base")
+        if path == "/clear-site-data":
+            response.headers["Clear-Site-Data"] = '"cookies", "storage", "*"'
         response.headers.update(BASE_OWN_HEADERS)
         return response
 
