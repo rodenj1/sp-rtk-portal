@@ -9,6 +9,9 @@
   body, carry ``ACTION_HEADER``, and send an ``Origin`` equal to the Portal's.
   That makes requests from a sandboxed base frame (``Origin: null``) and from
   other sites harmless.
+- A request the browser marks cross-site or same-site (``Sec-Fetch-Site``) is
+  refused, reads included, unless it opens a page (a top-level navigation,
+  e.g. a link in an email). A sandboxed base frame's requests are cross-site.
 
 Paths under ``EXEMPT_PREFIXES`` are not Portal pages: ``/b/`` is the base proxy,
 which stamps its own headers (ADR 0004), and ``/agent/`` is the agent API,
@@ -96,8 +99,26 @@ def page_headers(path: str) -> dict[str, str]:
     return PAGE_HEADERS
 
 
+def _from_elsewhere(headers: Headers) -> bool:
+    """Another site, or a sandboxed base frame (an opaque origin, so
+    "cross-site" even on this host), asking for anything but a page to open:
+    a fetch, a subresource, or a frame's own navigation. Browsers without
+    Fetch Metadata (and agents, curl) send no ``Sec-Fetch-Site``."""
+    if headers.get("sec-fetch-site") not in ("cross-site", "same-site"):
+        return False
+    opens_a_page = (
+        headers.get("sec-fetch-mode") == "navigate"
+        and headers.get("sec-fetch-dest") == "document"
+    )
+    return not opens_a_page
+
+
 def refusal(origin: str, headers: Headers, method: str) -> str | None:
     """Why a request must be refused, or None if it may proceed."""
+    if _from_elsewhere(headers):
+        # Even a read: WebKit sends the SameSite=Lax cookie with a sandboxed
+        # frame's requests to this host, so the cookie can't vouch for them.
+        return "cross-site request"
     if method in SAFE_METHODS:
         return None
     if headers.get(ACTION_HEADER) != "1":
