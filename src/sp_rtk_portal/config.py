@@ -75,6 +75,9 @@ class Settings:
     claim_starts_per_ip: int = 10
     wrong_codes_per_account: int = 10
     wrong_codes_overall: int = 100
+    # Refused tunnel opens (bad proof, forged or replayed Wake) per IP; past
+    # it, opens from that IP are refused unread for the rest of the hour.
+    tunnel_refusals_per_ip: int = 30
     # Above max_shared_users_per_base: one base can be filled in a sitting.
     shares_per_operator: int = 30
     rate_limit_period: timedelta = timedelta(hours=1)
@@ -132,6 +135,7 @@ class Settings:
                     "wrong_codes_per_account",
                     "wrong_codes_overall",
                     "shares_per_operator",
+                    "tunnel_refusals_per_ip",
                 )
                 if f"PORTAL_{name.upper()}" in env
             },

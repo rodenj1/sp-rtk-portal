@@ -10,6 +10,7 @@ stub playing the base's UI records every request that reaches it.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
@@ -44,6 +45,7 @@ EMAIL = "operator@example.com"
 OTHER = "colleague@example.com"
 PASSWORD = "correct horse battery staple"
 TUNNEL_URL = "wss://sp-rtk-base.big-spray.com/agent/tunnel"
+IP = "198.51.100.66"
 
 
 @pytest.fixture
@@ -198,9 +200,15 @@ async def test_the_wake_rides_on_the_poll_and_nothing_opens_without_one(
 
 
 async def hand_open(
-    portal: Portal, server: int, key: BaseKey | None, nonce: str | None
+    portal: Portal,
+    server: int,
+    key: BaseKey | None,
+    nonce: str | None,
+    ip: str | None = None,
 ) -> object:
     headers = {VERSION_HEADER: str(PROTOCOL_VERSION)}
+    if ip is not None:
+        headers["CF-Connecting-IP"] = ip
     if key is not None:
         headers["Authorization"] = key.authorization(
             "GET",
@@ -234,6 +242,28 @@ async def test_a_tunnel_open_with_a_wrong_or_reused_nonce_or_unsigned_is_refused
     opened = await hand_open(portal, server, agent.key, nonce)  # the real thing
     await opened.close()  # type: ignore[attr-defined]
     assert await refused(hand_open(portal, server, agent.key, nonce)) == 403
+
+
+async def test_after_too_many_refused_opens_an_ip_is_refused_outright_for_an_hour(
+    portal: Portal, operator: Browser, agent: RunningAgent, server: int
+):
+    ctx = portal.context
+    ctx.settings = dataclasses.replace(ctx.settings, tunnel_refusals_per_ip=3)
+    base_id = await base_of(agent)
+    await open_remotely(operator, base_id)
+    nonce = portal.context.tunnels.wake(base_id)
+    for _ in range(3):  # e.g. replaying forged Wakes
+        assert await refused(hand_open(portal, server, agent.key, "x", ip=IP)) == 403
+
+    # Now even a good open from there is refused; elsewhere is unaffected.
+    assert await refused(hand_open(portal, server, agent.key, nonce, ip=IP)) == 403
+    opened = await hand_open(portal, server, agent.key, nonce, ip="198.51.100.77")
+    await opened.close()  # type: ignore[attr-defined]
+
+    portal.clock.advance(minutes=60)
+    nonce = portal.context.tunnels.wake(base_id)
+    opened = await hand_open(portal, server, agent.key, nonce, ip=IP)
+    await opened.close()  # type: ignore[attr-defined]
 
 
 async def test_a_forged_poll_reply_cannot_point_the_tunnel_at_another_host(

@@ -26,7 +26,7 @@ from sp_rtk_portal.bases import online, store
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.proxy.middleware import frame_path
 from sp_rtk_portal.tunnel.broker import RemoteSession, TunnelBroker
-from sp_rtk_portal.web.client_ip import client_ip
+from sp_rtk_portal.web.client_ip import client_ip, rate_key
 from sp_rtk_portal.web.templates import render
 
 log = logging.getLogger(__name__)
@@ -156,8 +156,25 @@ async def agent_tunnel(websocket: WebSocket) -> None:
 
 
 async def _woken_base(websocket: WebSocket, ctx: PortalContext) -> str | None:
-    now = ctx.clock.now()
+    """The base whose agent may open this tunnel, or ``None`` (refused).
+    Each refusal counts against the client IP; past
+    ``tunnel_refusals_per_ip`` an hour, its opens are refused unread."""
     ip = client_ip(websocket)
+    s = ctx.settings
+    limit = {"limit": s.tunnel_refusals_per_ip, "period": s.rate_limit_period}
+    if ctx.limits.over("tunnel-refused", rate_key(ip), **limit) is not None:
+        log.info("refused a tunnel open from %s: too many refused", ip)
+        return None
+    base_id = await _check_open(websocket, ctx, ip)
+    if base_id is None:
+        ctx.limits.hit("tunnel-refused", rate_key(ip), period=s.rate_limit_period)
+    return base_id
+
+
+async def _check_open(
+    websocket: WebSocket, ctx: PortalContext, ip: str | None
+) -> str | None:
+    now = ctx.clock.now()
     try:
         proof = verify_proof(
             proof_from_authorization(websocket.headers.get("authorization")),
