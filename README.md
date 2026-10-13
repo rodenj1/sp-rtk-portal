@@ -102,7 +102,7 @@ An Operator Shares a base by email on its Shares page (`/bases/<id>/shares`, lin
 
 Limits (see the `PORTAL_*` settings above) are counted in the Portal process's memory: one replica, so a restart forgets them and only ever lets a little more through. A refused agent request gets 429 with `Retry-After` and an `ErrorReply("slow_down")`; the agent waits that long (at least twice its poll interval for a poll). A refused browser action gets 429 with `{"error": "... Try again in N minutes."}`.
 
-A base key seen from two public IPs in turns (A, B, A) within 5 minutes, by polls, Check-ins or Doorbell keepalives, marks the base "possible copy" on the base list and emails its Operator once (audit kind `possible_copy`). Nothing is blocked; the flag stays until the base is Un-claimed (Claiming again gives it a new key). A dual-stack base that alternates between IPv4 and IPv6 would look the same.
+A base key seen from two public IPs in turns (A, B, A) within 5 minutes, by polls, Check-ins or Doorbell keepalives, marks the base "possible copy" on the base list and emails its Operator once (audit kind `possible_copy`). Nothing is blocked; the flag stays until the base is Un-claimed (Claiming again gives it a new key). An IPv6 /64 counts as one place (privacy addresses rotate within it), and IPv4 and IPv6 are watched apart, so a dual-stack base switching families is not a copy (a copy on the other family is missed).
 
 ## Container image
 

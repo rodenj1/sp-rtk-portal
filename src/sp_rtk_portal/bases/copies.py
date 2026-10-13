@@ -5,7 +5,9 @@ keepalive) is shown to :class:`CopyWatch`. It remembers, per base, the runs
 of consecutive requests from one IP over the last ``possible_copy_window``.
 A request from an IP that had an earlier run, with a run from another IP
 since (A, B, A), is interleaving: two devices hold the key. A base that
-moves (A, then only B) never interleaves.
+moves (A, then only B) never interleaves. A "place" is an IPv4 address or
+an IPv6 /64 (privacy addresses rotate within it), and the two families are
+watched apart: a dual-stack base switching between them is one device.
 
 The first time, :func:`flag` marks the base, writes an audit entry and
 emails its Operator. Nothing is blocked. The watch is in memory (one Portal
@@ -15,6 +17,7 @@ minutes later, never wrongly.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -33,32 +36,43 @@ _MAX_RUNS = 16
 
 @dataclass
 class _Run:
+    place: str
     ip: str
     last_at: datetime
 
 
+def _place(ip: str) -> tuple[int, str]:
+    """``(IP version, place)``."""
+    addr = ipaddress.ip_address(ip)
+    if addr.version == 6:
+        return 6, str(ipaddress.ip_network(f"{addr}/64", strict=False))
+    return 4, str(addr)
+
+
 class CopyWatch:
     def __init__(self) -> None:
-        self._runs: dict[str, list[_Run]] = {}
+        self._runs: dict[tuple[str, int], list[_Run]] = {}
         self._flagged: set[str] = set()
 
     def seen(
         self, base_id: str, ip: str, now: datetime, window: timedelta
     ) -> tuple[str, str] | None:
         """A sign of life from ``ip``. Returns ``(other IP, ip)`` when it
-        interleaves with another IP within ``window`` (once per base)."""
-        runs = [r for r in self._runs.get(base_id, []) if r.last_at >= now - window]
-        if runs and runs[-1].ip == ip:
-            runs[-1].last_at = now
-            self._runs[base_id] = runs
+        interleaves with another place within ``window`` (once per base)."""
+        version, place = _place(ip)
+        key = (base_id, version)
+        runs = [r for r in self._runs.get(key, []) if r.last_at >= now - window]
+        if runs and runs[-1].place == place:
+            runs[-1].ip, runs[-1].last_at = ip, now
+            self._runs[key] = runs
             return None
         interleaved = (
             (runs[-1].ip, ip)
-            if any(r.ip == ip for r in runs) and base_id not in self._flagged
+            if any(r.place == place for r in runs) and base_id not in self._flagged
             else None
         )
-        runs.append(_Run(ip, now))
-        self._runs[base_id] = runs[-_MAX_RUNS:]
+        runs.append(_Run(place, ip, now))
+        self._runs[key] = runs[-_MAX_RUNS:]
         if interleaved:
             self._flagged.add(base_id)
         self._sweep(now, window)
@@ -67,9 +81,9 @@ class CopyWatch:
     def _sweep(self, now: datetime, window: timedelta) -> None:
         if len(self._runs) < 1024:
             return
-        for base_id, runs in list(self._runs.items()):
+        for key, runs in list(self._runs.items()):
             if runs[-1].last_at < now - window:
-                del self._runs[base_id]
+                del self._runs[key]
 
 
 async def watch(ctx: PortalContext, base_id: str, ip: str | None) -> None:

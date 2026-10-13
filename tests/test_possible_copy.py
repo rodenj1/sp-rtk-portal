@@ -212,3 +212,31 @@ async def test_doorbell_keepalives_count_too(
 
     [flag] = (await _card(operator, agent))["possible-copy"]
     assert COPY_IP in flag
+
+
+async def test_a_dual_stack_base_switching_between_ipv4_and_ipv6_is_not_a_copy(
+    portal: Portal, operator: Browser, agent: RunningAgent, smtp: FakeSmtp
+):
+    for _ in range(3):
+        portal.clock.advance(seconds=5)
+        await _copy(portal, agent, ip="2001:db8:5:6::1")  # the same base, on v6
+        await agent.run(seconds=20)
+
+    assert "possible-copy" not in await _card(operator, agent)
+
+
+async def test_ipv6_addresses_in_one_64_are_one_place(
+    portal: Portal, operator: Browser, agent: RunningAgent
+):
+    agent.ip = "2001:db8:5:6::1"
+    await agent.run(seconds=20)
+    portal.clock.advance(seconds=5)
+    await _copy(portal, agent, ip="2001:db8:5:6:a8f3::9")  # a privacy address
+    await agent.run(seconds=20)
+    assert "possible-copy" not in await _card(operator, agent)
+
+    portal.clock.advance(seconds=5)
+    await _copy(portal, agent, ip="2001:db8:7:8::1")  # another network
+    await agent.run(seconds=20)
+    [flag] = (await _card(operator, agent))["possible-copy"]
+    assert "2001:db8:7:8::1" in flag
