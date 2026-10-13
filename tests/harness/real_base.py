@@ -66,6 +66,41 @@ class RealBase:
         assert resp.status_code == 200, resp.text
         return "input.connected"
 
+    @contextmanager
+    def connected_gps(self) -> Iterator[None]:
+        """The base connected to its fake GPS (the GPS config page's cards
+        need one), disconnected again afterwards."""
+        api = self.url + "/api/device"
+        httpx.post(f"{api}/disconnect", timeout=5)
+        resp = httpx.post(
+            f"{api}/connect",
+            json={"vendor": "fake", "port": "FAKE", "baud_rate": 115200},
+            timeout=10,
+        )
+        assert resp.status_code in (200, 409), resp.text
+        try:
+            yield
+        finally:
+            httpx.post(f"{api}/disconnect", timeout=5)
+
+    @contextmanager
+    def profile(self, name: str) -> Iterator[None]:
+        """A saved GPS profile named ``name`` (exportable from the GPS config
+        page), deleted afterwards."""
+        profile = {
+            "name": name,
+            "version": 1,
+            "hardware": "any",
+            "data_link_port": ["UART1"],
+            "rtcm_stream": {"matrix": {"1005": {"UART1": True}}},
+        }
+        resp = httpx.post(f"{self.url}/api/profiles", json=profile, timeout=5)
+        assert resp.status_code in (201, 409), resp.text
+        try:
+            yield
+        finally:
+            httpx.delete(f"{self.url}/api/profiles/{name}", timeout=5)
+
     def stop_relay(self) -> None:
         httpx.post(f"{self.url}/api/relay/stop", timeout=15)
         httpx.delete(f"{self.url}/api/destinations/{RELAY_DESTINATION}", timeout=5)
@@ -84,13 +119,17 @@ def _free_port() -> int:
 
 
 @contextmanager
-def real_base() -> Iterator[RealBase]:
+def real_base(*, appliance: bool = False) -> Iterator[RealBase]:
+    """``appliance``: the full-control install, which adds the Network page
+    (it only reads the host's network state unless someone presses Join)."""
     port = _free_port()
     url = f"http://127.0.0.1:{port}"
     with tempfile.TemporaryDirectory(prefix="real-base-") as d:
         home = Path(d)
         config = home / ".config" / "sp-rtk-base"
         config.mkdir(parents=True)
+        if appliance:
+            (config / "config.yaml").write_text("deployment:\n  mode: appliance\n")
         (home / "pypi").mkdir()
         (home / "update").mkdir()
         env = {
