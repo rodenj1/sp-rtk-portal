@@ -3,6 +3,8 @@ recent Shares after a password change or recovery, and account deletion."""
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
@@ -15,6 +17,8 @@ from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.shares import sharing
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.templates import render
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -108,6 +112,10 @@ async def review_done(
 # --- account deletion -----------------------------------------------------------------
 
 DELETE_FAILED = "Your account couldn't be deleted right now. Nothing was changed."
+DELETE_UNFINISHED = (
+    "Your account couldn't be deleted right now. Your bases and Shares are"
+    " unchanged. Try again."
+)
 
 
 @router.get("/account/delete", response_class=HTMLResponse)
@@ -137,6 +145,11 @@ async def delete_account(
         await deletion.delete_account(ctx, account, client_ip(request))
     except AuthentikFailedClosed as e:
         return failed_closed(e, DELETE_FAILED)
+    except Exception:
+        # Authentik may have deactivated the user, but the Portal's own
+        # changes rolled back as one; still signed in, they can try again.
+        log.exception("account %s: deletion failed", account.id)
+        return JSONResponse({"error": DELETE_UNFINISHED}, status_code=500)
     response = JSONResponse({"next": "/login"})
     sessions.clear_cookie(response)
     return response

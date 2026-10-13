@@ -32,15 +32,34 @@ async def by_operator(
     deletes their account (``by="account_deleted"``). ``False``: no such
     base of theirs (a Shared user's attempt included)."""
     async with ctx.db.connection() as conn:
-        cur = await conn.execute(
-            _SELECT + " WHERE id = %s AND owner_account_id = %s FOR UPDATE",
-            (base_id, account_id),
-        )
-        row = await cur.fetchone()
-        if row is None:
+        if not await forget_owned(
+            ctx, conn, base_id=base_id, account_id=account_id, ip=ip, by=by
+        ):
             return False
-        await _forgotten(ctx, conn, row, by=by, ip=ip)
     await ctx.tunnels.forget_base(base_id)
+    return True
+
+
+async def forget_owned(
+    ctx: PortalContext,
+    conn: Connection,
+    *,
+    base_id: str,
+    account_id: int,
+    ip: str | None,
+    by: Literal["portal", "account_deleted"],
+) -> bool:
+    """The database half of :func:`by_operator`, inside the caller's
+    transaction (account deletion Un-claims every base in one). Once it
+    commits, the caller must ``await ctx.tunnels.forget_base(base_id)``."""
+    cur = await conn.execute(
+        _SELECT + " WHERE id = %s AND owner_account_id = %s FOR UPDATE",
+        (base_id, account_id),
+    )
+    row = await cur.fetchone()
+    if row is None:
+        return False
+    await _forgotten(ctx, conn, row, by=by, ip=ip)
     return True
 
 

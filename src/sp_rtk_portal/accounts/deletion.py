@@ -4,13 +4,16 @@
 
 1. deactivates the Authentik user (admin API). If Authentik refuses, it
    raises ``AuthentikFailedClosed`` and nothing has changed;
-2. Un-claims every base the account Claimed (``unclaim.by_operator`` with
-   ``by="account_deleted"``: the Shares on them go, agents get 401
-   ``unclaimed``);
-3. in one transaction: removes the Shares the account holds on other bases
-   (audited ``share_left`` with ``reason: account_deleted``), ends every
-   Portal session, marks the account deleted and audits ``account_deleted``;
-4. ends the account's remaining Remote sessions (reason ``account_deleted``).
+2. in ONE transaction: Un-claims every base the account Claimed
+   (``unclaim.forget_owned`` with ``by="account_deleted"``: the Shares on
+   them go, agents get 401 ``unclaimed``), removes the Shares the account
+   holds on other bases (audited ``share_left`` with ``reason:
+   account_deleted``), ends every Portal session, marks the account deleted
+   and audits ``account_deleted``. If any of it fails none of it sticks:
+   the user is still signed in and can try again (deactivating an inactive
+   Authentik user again is harmless);
+3. forgets the Un-claimed bases' tunnels and Remote sessions, and ends the
+   account's remaining Remote sessions (reason ``account_deleted``).
 
 The account row stays (``deleted_at``) so audit entries keep their "who".
 Pending shares addressed to the email stay: they convert only for an account
@@ -41,18 +44,23 @@ async def preview(conn: Connection, account_id: int) -> list[bases.BaseSummary]:
 async def delete_account(ctx: PortalContext, account: Account, ip: str | None) -> None:
     async with ctx.db.connection() as conn:
         sub = await authentik_sub(conn, account.id)
-        owned = [b.id for b in await bases.owned_by(conn, account.id)]
     await ctx.authentik.deactivate_user(sub)
 
-    unclaimed = []
-    for base_id in owned:
-        if await unclaim.by_operator(
-            ctx, base_id=base_id, account_id=account.id, ip=ip, by=BY_ACCOUNT_DELETION
-        ):
-            unclaimed.append(base_id)
-
     now = ctx.clock.now()
+    unclaimed: list[str] = []
+    # One transaction: if anything fails, nothing here sticks and the user
+    # (still signed in; deactivating again is harmless) can try again.
     async with ctx.db.connection() as conn:
+        for base in await bases.owned_by(conn, account.id):
+            if await unclaim.forget_owned(
+                ctx,
+                conn,
+                base_id=base.id,
+                account_id=account.id,
+                ip=ip,
+                by=BY_ACCOUNT_DELETION,
+            ):
+                unclaimed.append(base.id)
         cur = await conn.execute(
             "SELECT base_id FROM share WHERE account_id = %s ORDER BY base_id",
             (account.id,),
@@ -88,4 +96,6 @@ async def delete_account(ctx: PortalContext, account: Account, ip: str | None) -
             ip=ip,
             detail={"email": account.email, "unclaimed": unclaimed},
         )
+    for base_id in unclaimed:
+        await ctx.tunnels.forget_base(base_id)
     await ctx.tunnels.end_sessions(ACCOUNT_DELETED, account_id=account.id, ip=ip)

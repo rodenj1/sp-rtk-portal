@@ -410,3 +410,39 @@ async def test_account_deletion_changes_nothing_if_authentik_refuses(
     assert len(await portal.query("SELECT id FROM base")) == 1
     assert (await operator.get("/")).status_code == 200
     assert authentik.users[EMAIL].is_active is True
+
+
+async def test_a_deletion_that_fails_partway_changes_nothing_and_can_be_retried(
+    portal: Portal, authentik: FakeAuthentik, operator: Browser, agent: RunningAgent
+):
+    """Authentik has deactivated the user, then the Portal's own changes fail
+    on the second base: none of them stick (no account left deactivated with
+    half its bases Claimed), and the same signed-in user can try again."""
+    async with running_agent(portal, ip="198.51.100.30") as second:
+        await second.claim(operator, "South field")
+        bases = {await base_of(agent), await base_of(second)}
+        unclaims = 0
+
+        async def fails_on_the_second(conn: object, event: object) -> None:
+            nonlocal unclaims
+            unclaims += 1
+            if unclaims == 2:
+                raise RuntimeError("the database went away")
+
+        portal.context.base_events.on_unclaimed(fails_on_the_second)
+
+        resp = await operator.action("/account/delete")
+
+        assert resp.status_code == 500
+        assert "error" in resp.json()
+        assert authentik.users[EMAIL].is_active is False
+        page = (await operator.get("/")).text
+        assert all(base_card(page, b) for b in bases)
+        assert (await operator.get("/account")).status_code == 200
+
+        resp = await operator.action("/account/delete")
+
+        assert resp.json() == {"next": "/login"}
+        assert not base_card((await operator.get("/")).text, next(iter(bases)))
+        await agent.until("not_connected")
+        await second.until("not_connected")
