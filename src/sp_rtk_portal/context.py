@@ -18,6 +18,7 @@ from sp_rtk_portal.accounts.events import AccountEvents
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
+from sp_rtk_portal.tunnel.broker import TunnelBroker
 
 
 @dataclass
@@ -33,6 +34,8 @@ class PortalContext:
     account_events: AccountEvents
     # Every agent request proof seen in the last minute (refuses replays).
     agent_proofs: ReplayCache
+    # Wakes, tunnels and Remote sessions (process-local: one instance).
+    tunnels: TunnelBroker
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:

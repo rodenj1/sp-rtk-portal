@@ -8,6 +8,7 @@ Portal's own JavaScript does (JSON body, custom header, same Origin).
 
 from __future__ import annotations
 
+import dataclasses
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
@@ -46,6 +47,7 @@ def test_settings(database_url: str, authentik: FakeAuthentik) -> Settings:
         oidc_client_id=authentik.client_id,
         oidc_client_secret=authentik.client_secret,
         owner_emails=(PORTAL_OWNER,),
+        tunnel_sweep_interval=0.01,
     )
 
 
@@ -94,7 +96,7 @@ class Portal:
         self.settings = settings
         self.clock = clock
         self.authentik = authentik
-        self.origin = ORIGIN
+        self.origin = settings.public_origin
 
     @property
     def context(self) -> Any:
@@ -124,9 +126,16 @@ class Portal:
 
 @asynccontextmanager
 async def running_portal(
-    database_url: str, clock: FakeClock, authentik: FakeAuthentik
+    database_url: str,
+    clock: FakeClock,
+    authentik: FakeAuthentik,
+    origin: str = ORIGIN,
 ) -> AsyncIterator[Portal]:
-    settings = test_settings(database_url, authentik)
+    """The Portal, its lifespan running. ``origin``: its public origin (the
+    browser tests serve it at ``http://localhost:<port>``)."""
+    settings = dataclasses.replace(
+        test_settings(database_url, authentik), public_origin=origin
+    )
     app = create_app(settings, clock=clock, authentik_transport=authentik.transport())
     async with LifespanManager(app):
         yield Portal(app, settings, clock, authentik)

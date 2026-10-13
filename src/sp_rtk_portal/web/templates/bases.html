@@ -46,6 +46,9 @@
     {% for text in notices %}
     <p class="notice" data-field="notice">{{ text }}</p>
     {% endfor %}
+    <form class="open" data-action="/bases/{{ base.id }}/remote">
+      <button type="submit" data-field="open-remotely">Open remotely</button>
+    </form>
     <form class="metered" data-action="/bases/{{ base.id }}/metered">
       <input type="hidden" name="metered" value="{{ 'false' if base.metered else 'true' }}">
       <button type="submit">{% if base.metered %}Unmark metered{% else %}Mark metered (polls less often){% endif %}</button>

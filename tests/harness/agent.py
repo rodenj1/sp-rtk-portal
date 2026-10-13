@@ -15,7 +15,11 @@ its edges are wired to the harness:
 - DNS (for a Doorbell host) is :class:`FakeDns`, and its LAN addresses are
   ``agent.lan``;
 - its state directory is a temp dir, so a "restart" or a "reinstall" is a
-  new ``PortalAgent`` over the same directory.
+  new ``PortalAgent`` over the same directory;
+- its tunnel (a real websocket) goes to the Portal served over TCP
+  (``server_port``, see :mod:`.server`) whatever URL the agent asks for;
+  the URLs it asked for are in ``agent.tunnel_urls``. Its streams go to
+  ``app_port`` (the :mod:`.base_ui` stub) instead of ``:8080``.
 
 sp-rtk-base is a dev dependency by path (``../sp-rtk-base``, the sibling
 submodule in the rtk_development meta repo); see the README.
@@ -28,12 +32,15 @@ import tempfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 from sp_rtk_base.portal_agent.client import read_status, start_claim
 from sp_rtk_base.portal_agent.control import PortalAgent, serve
 from sp_rtk_base.portal_agent.protocol import AgentStatus
-from sp_rtk_portal_protocol import PROTOCOL_VERSION, LanAddress
+from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
+from websockets.asyncio.client import connect as ws_connect
 
 from .agent_time import AgentTime
 from .portal import Browser, Portal
@@ -103,8 +110,21 @@ class FakeDns:
 
 
 class RunningAgent:
-    def __init__(self, portal: Portal, state_dir: Path, sock: Path, ip: str) -> None:
+    def __init__(
+        self,
+        portal: Portal,
+        state_dir: Path,
+        sock: Path,
+        ip: str,
+        *,
+        server_port: int | None = None,
+        app_port: int | None = None,
+    ) -> None:
         self.portal = portal
+        self.server_port = server_port
+        self.app_port = app_port
+        self.tunnel_urls: list[str] = []
+        """Every tunnel URL the agent tried to open."""
         self.state_dir = state_dir
         self.sock = sock
         self.ip = ip
@@ -119,7 +139,24 @@ class RunningAgent:
         self._agent: PortalAgent | None = None
         self._server: asyncio.Server | None = None
 
+    @property
+    def key(self) -> BaseKey:
+        """The base key the agent made at Claim (to play it by hand)."""
+        return BaseKey.from_pem((self.state_dir / "base_key.pem").read_bytes())
+
+    async def _tunnel_connect(self, url: str, headers: dict[str, str]) -> Any:
+        self.tunnel_urls.append(url)
+        if self.server_port is None or not self.reachable:
+            raise OSError("no Portal served for the tunnel")
+        return await ws_connect(
+            f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
+            additional_headers={**headers, "CF-Connecting-IP": self.ip},
+        )
+
     async def start(self) -> None:
+        extra: dict[str, Any] = {"tunnel_connect": self._tunnel_connect}
+        if self.app_port is not None:
+            extra["app_port"] = self.app_port
         self._agent = PortalAgent(
             self.state_dir,
             portal_url=self.portal.origin,
@@ -130,6 +167,7 @@ class RunningAgent:
             resolve=self.dns,
             lan_addresses=lambda: list(self.lan),
             protocol_version=self.protocol_version,
+            **extra,
         )
         self._server = await serve(self.sock, self._agent)
         if self._agent.status().state == "connected":
@@ -189,11 +227,22 @@ class RunningAgent:
 
 @asynccontextmanager
 async def running_agent(
-    portal: Portal, ip: str = BASE_IP
+    portal: Portal,
+    ip: str = BASE_IP,
+    *,
+    server_port: int | None = None,
+    app_port: int | None = None,
 ) -> AsyncIterator[RunningAgent]:
     # AF_UNIX paths are capped near 108 bytes: keep the temp dir short.
     with tempfile.TemporaryDirectory(prefix="agent-") as d:
-        agent = RunningAgent(portal, Path(d) / "state", Path(d) / "control.sock", ip)
+        agent = RunningAgent(
+            portal,
+            Path(d) / "state",
+            Path(d) / "control.sock",
+            ip,
+            server_port=server_port,
+            app_port=app_port,
+        )
         await agent.start()
         try:
             yield agent

@@ -19,6 +19,8 @@ PASSWORD_RECOVERY = "password_recovery"
 TOTP_ENABLED = "totp_enabled"
 TOTP_DISABLED = "totp_disabled"
 CLAIM = "claim"
+REMOTE_SESSION_START = "remote_session_start"
+REMOTE_SESSION_END = "remote_session_end"
 
 
 async def record(

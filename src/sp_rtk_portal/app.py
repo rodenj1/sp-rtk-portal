@@ -29,6 +29,8 @@ from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Database
+from sp_rtk_portal.tunnel import routes as tunnel_routes
+from sp_rtk_portal.tunnel.broker import TunnelBroker
 from sp_rtk_portal.web.security import SAFE_METHODS, PortalSecurityMiddleware
 from sp_rtk_portal.web.templates import static_files
 
@@ -45,22 +47,28 @@ def create_app(
     clock, and a transport that reaches a fake Authentik in-process.
     """
     clock = clock or SystemClock()
+    db = Database(settings.database_url)
     ctx = PortalContext(
         settings=settings,
         clock=clock,
-        db=Database(settings.database_url),
+        db=db,
         authentik=Authentik(settings, clock, authentik_transport),
         login_attempts=PendingAttempts(settings.login_attempt_lifetime),
         flow_attempts=PendingAttempts(settings.login_attempt_lifetime),
         account_events=AccountEvents(),
         agent_proofs=ReplayCache(),
+        tunnels=TunnelBroker(settings, clock, db),
     )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await ctx.db.open()
         try:
-            yield
+            await ctx.tunnels.start()
+            try:
+                yield
+            finally:
+                await ctx.tunnels.stop()
         finally:
             await ctx.db.close()
 
@@ -82,6 +90,7 @@ def create_app(
     app.include_router(base_routes.router)
     app.include_router(agent_routes.router)
     app.include_router(settings_routes.router)
+    app.include_router(tunnel_routes.router)
     return app
 
 

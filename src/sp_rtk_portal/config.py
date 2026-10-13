@@ -37,6 +37,10 @@ class Settings:
     # The oldest agent protocol version still served; older agents get 426.
     # Raise it only after at least 6 months' notice to affected Operators.
     min_protocol_version: int = 1
+    # Tunnel broker (ticket #88): how long a Wake's nonce may be redeemed,
+    # and how often (seconds, real time) Remote session timeouts are checked.
+    wake_lifetime: timedelta = timedelta(minutes=5)
+    tunnel_sweep_interval: float = 1.0
 
     @property
     def oidc_issuer(self) -> str:

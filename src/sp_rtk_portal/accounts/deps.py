@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from urllib.parse import quote, urlsplit
 
-from fastapi import Depends, Request
+from fastapi import Depends, Request, WebSocket
 from starlette.datastructures import MutableHeaders
 from starlette.responses import Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -64,6 +64,21 @@ async def current_account(
         raise SignInRequired
     request.scope[_RENEW] = (token, lifetime)
     return account
+
+
+async def websocket_account(websocket: WebSocket, ctx: PortalContext) -> Account | None:
+    """The signed-in account of a websocket from one of the Portal's own
+    pages, or ``None``. Refuses any ``Origin`` but the Portal's (a page on
+    another site, or a sandboxed base frame's ``null``)."""
+    if websocket.headers.get("origin") != ctx.settings.public_origin:
+        return None
+    token = websocket.cookies.get(sessions.COOKIE)
+    if not token:
+        return None
+    async with ctx.db.connection() as conn:
+        return await sessions.resume(
+            conn, token, ctx.clock.now(), ctx.settings.session_lifetime
+        )
 
 
 class SessionRenewalMiddleware:

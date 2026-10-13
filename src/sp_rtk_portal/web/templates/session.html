@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block head %}<script src="/static/session.js" defer></script>{% endblock %}
+{% block account %}<a href="/account">{{ account.email }}</a>{% endblock %}
+{% block main %}
+<section class="session-bar" data-session-bar data-base="{{ base.id }}" data-name="{{ base.name }}" data-state="{{ state }}">
+  <div class="bar-head">
+    <a href="/" data-field="back">&larr; Your bases</a>
+    <span class="name" data-field="name">{{ base.name }}</span>
+    <span class="remote">Remote</span>
+    <span class="status" data-field="status" role="status">{% if state == "connected" %}Connected{% elif state == "waking" %}Waking {{ base.name }}…{% elif state == "ended" %}Session ended{% else %}Not connected{% endif %}</span>
+  </div>
+  <div data-show="waking" {% if state != "waking" %}hidden{% endif %}>
+    <progress data-field="progress"></progress>
+    <p class="hint" data-field="hint">{{ base.name }} checks for requests every {{ poll_interval }} s, so this can take up to {{ poll_interval }} s.</p>
+  </div>
+  <form data-action="/bases/{{ base.id }}/remote" data-show="none ended" {% if state not in ("none", "ended") %}hidden{% endif %}>
+    <button type="submit" data-field="open">Open remotely</button>
+  </form>
+  <p class="error" data-error role="alert" hidden></p>
+</section>
+{% endblock %}

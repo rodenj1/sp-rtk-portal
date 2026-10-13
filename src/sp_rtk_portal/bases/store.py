@@ -51,3 +51,16 @@ async def set_metered(
         (metered, base_id, account_id),
     )
     return cur.rowcount > 0
+
+
+async def reachable_by(
+    conn: Connection, account_id: int, base_id: str
+) -> BaseSummary | None:
+    """``base_id`` if ``account_id`` may open it remotely (its owner; Shares
+    add Shared users, #91), else ``None``."""
+    cur = await conn.execute(
+        f"SELECT {_COLUMNS} FROM base WHERE id = %s AND owner_account_id = %s",
+        (base_id, account_id),
+    )
+    row = await cur.fetchone()
+    return BaseSummary(**row) if row else None

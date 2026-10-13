@@ -102,7 +102,7 @@ async def poll(
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
     """A sign of life. The reply carries the agent config block, the metered
-    flag and the notices (and, from #88, a Wake)."""
+    flag, the notices, and a Wake's nonce when one is pending."""
     req.message(Poll)
     async with ctx.db.connection() as conn:
         seen = await presence.polled(
@@ -116,7 +116,14 @@ async def poll(
             raise _unclaimed()
         config = await agent_config.current(conn, ctx.settings)
         notices = await agent_config.wire_notices(conn)
-    return reply(PollReply(config=config, metered=seen.metered, notices=notices))
+    return reply(
+        PollReply(
+            config=config,
+            metered=seen.metered,
+            notices=notices,
+            wake=ctx.tunnels.wake_for_poll(seen.base_id),
+        )
+    )
 
 
 @router.post(CHECK_IN_PATH)
