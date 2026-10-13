@@ -13,6 +13,7 @@ from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.bases import claims, local, online, store, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
+from sp_rtk_portal.ratelimit import try_again_in
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.security import allow_connect
 from sp_rtk_portal.web.templates import render
@@ -213,6 +214,4 @@ def _wrong_code(ctx: PortalContext, account: Account) -> None:
 
 
 def _too_many_wrong_codes(wait: int) -> str:
-    minutes = max(1, -(-wait // 60))
-    unit = "minute" if minutes == 1 else "minutes"
-    return f"Too many wrong codes. Try again in {minutes} {unit}."
+    return f"Too many wrong codes. {try_again_in(wait)}"

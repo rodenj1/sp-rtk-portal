@@ -10,6 +10,7 @@ from sp_rtk_portal.accounts.deps import current_account
 from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.bases import store as bases
 from sp_rtk_portal.context import PortalContext, portal_context
+from sp_rtk_portal.ratelimit import try_again_in
 from sp_rtk_portal.shares import sharing, store
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.templates import render
@@ -58,6 +59,18 @@ async def share(
     account: Account = Depends(current_account),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
+    # Each Share emails someone: a cap per Operator an hour (ticket #98).
+    s = ctx.settings
+    wait = ctx.limits.over(
+        "share",
+        str(account.id),
+        limit=s.shares_per_operator,
+        period=s.rate_limit_period,
+    )
+    if wait is not None:
+        return JSONResponse(
+            {"error": f"Too many Shares. {try_again_in(wait)}"}, status_code=429
+        )
     try:
         await sharing.share(
             ctx,
@@ -68,6 +81,7 @@ async def share(
         )
     except sharing.ShareRefused as refused:
         return JSONResponse({"error": str(refused)}, status_code=refused.status)
+    ctx.limits.hit("share", str(account.id), period=s.rate_limit_period)
     return JSONResponse({"next": f"/bases/{base_id}/shares"})
 
 

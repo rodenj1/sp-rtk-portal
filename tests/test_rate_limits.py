@@ -22,6 +22,7 @@ from sp_rtk_portal_protocol import CHECK_IN_PATH, POLL_PATH, BaseKey
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
+from .harness.fake_smtp import FakeSmtp
 from .harness.pages import base_card
 from .harness.portal import Browser, Portal
 from .harness.signer import SigningAgent, signing_agent
@@ -287,3 +288,28 @@ async def test_the_real_agent_backs_off_when_told_and_stays_online(
         assert status.state == "connected"
         page = await operator.get("/")
         assert base_card(page.text, status.base_id)["state"] == ["Online"]
+
+
+# --- Shares ---------------------------------------------------------------------
+
+
+async def test_shares_per_operator_are_limited_an_hour(
+    portal: Portal, operator: Browser, smtp: FakeSmtp
+):
+    _limits(portal, shares_per_operator=2)
+    async with _claimed(portal, operator) as agent:
+        base_id = (await agent.status()).base_id
+        path = f"/bases/{base_id}/shares"
+        for n in range(2):
+            ok = await operator.action(path, {"email": f"c{n}@example.com"})
+            assert ok.status_code == 200, ok.text
+        sent = len(smtp.outbox)
+
+        refused = await operator.action(path, {"email": "c9@example.com"})
+
+        assert refused.status_code == 429
+        assert refused.json()["error"].startswith("Too many Shares. Try again in")
+        assert len(smtp.outbox) == sent  # nobody emailed
+        portal.clock.advance(minutes=60)
+        again = await operator.action(path, {"email": "c9@example.com"})
+        assert again.status_code == 200, again.text

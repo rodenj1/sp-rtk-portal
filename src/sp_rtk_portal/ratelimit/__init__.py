@@ -119,6 +119,12 @@ class Limiter:
                 del self._buckets[k]
 
 
+def try_again_in(seconds: int) -> str:
+    """``"Try again in 3 minutes."``, for a refusal a person reads."""
+    minutes = max(1, math.ceil(seconds / 60))
+    return f"Try again in {minutes} minute{'' if minutes == 1 else 's'}."
+
+
 def _ceil(seconds: float) -> int:
     # Rounded first: 1.0000000000000002 s of float noise is 1 s, not 2.
     return max(0, math.ceil(round(seconds, 6)))

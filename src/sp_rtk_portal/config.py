@@ -75,7 +75,8 @@ class Settings:
     claim_starts_per_ip: int = 10
     wrong_codes_per_account: int = 10
     wrong_codes_overall: int = 100
-    shares_per_operator: int = 20
+    # Above max_shared_users_per_base: one base can be filled in a sitting.
+    shares_per_operator: int = 30
     rate_limit_period: timedelta = timedelta(hours=1)
     # Possible copy: the same base key polling from two public IPs,
     # interleaved within this long.
