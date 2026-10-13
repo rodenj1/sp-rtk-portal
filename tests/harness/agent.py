@@ -187,6 +187,7 @@ class RunningAgent:
         self.traffic = Traffic()
         self.reachable = True
         """``False``: the base is cut off (its requests fail to connect)."""
+        self._tunnel_ws: Any = None
         self._agent: PortalAgent | None = None
         self._server: asyncio.Server | None = None
 
@@ -199,10 +200,16 @@ class RunningAgent:
         self.tunnel_urls.append(url)
         if self.server_port is None or not self.reachable:
             raise OSError("no Portal served for the tunnel")
-        return await ws_connect(
+        self._tunnel_ws = await ws_connect(
             f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
             additional_headers={**headers, "CF-Connecting-IP": self.ip},
         )
+        return self._tunnel_ws
+
+    def drop_tunnel(self) -> None:
+        """The network drops the base's tunnel (its TCP connection dies)."""
+        assert self._tunnel_ws is not None, "no tunnel was opened"
+        self._tunnel_ws.transport.abort()
 
     async def start(self) -> None:
         extra: dict[str, Any] = {

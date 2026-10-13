@@ -134,4 +134,6 @@ async def test_an_open_session_bar_says_when_the_base_is_paused(
 
         await agent.pause()
 
-        await expect(status).to_have_text("Remote access was paused on the base")
+        await expect(status).to_have_text("Remote access paused")
+        await expect(page.locator("[data-field=remote-paused]")).to_be_visible()
+        assert await page.locator("[data-field=frame]").count() == 0

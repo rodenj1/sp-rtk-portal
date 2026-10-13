@@ -2,16 +2,66 @@
 {% block head %}<script src="/static/session.js" defer></script>{% endblock %}
 {% block account %}<a href="/account">{{ account.email }}</a>{% endblock %}
 {% block main %}
+{#- One block per state, shown by its data-show (session.js keeps them in step
+    with the status channel). "paused" is an ended session whose reason is
+    the hard cap; "remote_paused" is remote access paused on the base
+    (#92). A new state adds a label here and in session.js, and its
+    own block. -#}
+{% set labels = {
+  "waking": "Waking " ~ base.name ~ "…",
+  "reconnecting": "Reconnecting…",
+  "didnt_wake": "Didn't wake",
+  "connected": "Connected",
+  "offline": "Offline",
+  "paused": "Session paused",
+  "remote_paused": "Remote access paused",
+  "ended": "Session ended",
+  "none": "Not connected",
+} %}
 <section class="session-bar" data-session-bar data-base="{{ base.id }}" data-name="{{ base.name }}" data-state="{{ state }}">
   <div class="bar-head">
     <a href="/" data-field="back">&larr; Your bases</a>
     <span class="name" data-field="name">{{ base.name }}</span>
     <span class="remote">Remote</span>
-    <span class="status" data-field="status" role="status">{% if state == "connected" %}Connected{% elif state == "waking" %}Waking {{ base.name }}…{% elif state == "ended" %}Session ended{% else %}Not connected{% endif %}</span>
+    <span class="status" data-field="status" role="status">{{ labels.get(state, state) }}</span>
+    <button type="button" class="fullscreen" data-field="fullscreen" data-show="connected" {% if state != "connected" %}hidden{% endif %}>Full screen</button>
   </div>
-  <div data-show="waking" {% if state != "waking" %}hidden{% endif %}>
+  <p class="presence" data-field="presence" hidden></p>
+  <div data-show="waking reconnecting" {% if state not in ("waking", "reconnecting") %}hidden{% endif %}>
     <progress data-field="progress"></progress>
     <p class="hint" data-field="hint">{{ base.name }} checks for requests every {{ poll_interval }} s, so this can take up to {{ poll_interval }} s.</p>
+    <p class="hint" data-show="reconnecting" {% if state != "reconnecting" %}hidden{% endif %}>The connection to {{ base.name }} dropped. Waking it once more.</p>
+  </div>
+  <div class="trouble didnt-wake" data-field="didnt-wake" data-show="didnt_wake" {% if state != "didnt_wake" %}hidden{% endif %}>
+    <p>{{ base.name }} didn't wake. Last seen <span data-field="last-seen">{{ last_seen }}</span> · Wake mode: <span data-field="wake-mode">{{ wake_mode }}</span></p>
+    <form data-action="/bases/{{ base.id }}/remote">
+      <button type="submit" data-field="retry">Retry</button>
+    </form>
+    {% include "_open_locally.html" %}
+  </div>
+  <div class="trouble offline" data-field="offline" data-show="offline" {% if state != "offline" %}hidden{% endif %}>
+    <p>{{ base.name }} is offline, last seen {{ last_seen }}. The Portal didn't try to wake it.</p>
+    <form data-action="/bases/{{ base.id }}/remote">
+      <input type="hidden" name="try_anyway" value="true">
+      <button type="submit" data-field="try-anyway">Try anyway</button>
+    </form>
+    {% include "_open_locally.html" %}
+  </div>
+  <div class="still-there" data-field="still-there" role="alert" hidden>
+    <p>Still there? This session pauses in a few minutes.</p>
+    <form data-action="/bases/{{ base.id }}/keep-going">
+      <button type="submit" data-field="keep-going">Keep going</button>
+    </form>
+  </div>
+  <div class="paused" data-field="paused" data-show="paused" hidden>
+    <p>This session paused after an hour, and {{ base.name }}'s pages were closed.</p>
+    <form data-action="/bases/{{ base.id }}/remote">
+      <button type="submit" data-field="reconnect">Reconnect</button>
+    </form>
+  </div>
+  <div class="trouble remote-paused" data-field="remote-paused" data-show="remote_paused" {% if state != "remote_paused" %}hidden{% endif %}>
+    <p>Remote access to {{ base.name }} is paused on the base itself. Only someone there can resume it, on its local Portal page.</p>
+    {% include "_open_locally.html" %}
   </div>
   <form data-action="/bases/{{ base.id }}/remote" data-show="none ended" {% if state not in ("none", "ended") %}hidden{% endif %}>
     <button type="submit" data-field="open">Open remotely</button>
@@ -20,5 +70,6 @@
   <div class="base-frame" data-field="frame-box" data-show="connected" {% if state != "connected" %}hidden{% endif %}>
     <p class="frame-label" data-field="frame-label">Below: {{ base.name }}'s own pages, served by the base itself. The Portal never asks for your password or sign-in in there.</p>
   </div>
+  <button type="button" class="exit-fullscreen" data-field="exit-fullscreen" hidden>Exit full screen</button>
 </section>
 {% endblock %}

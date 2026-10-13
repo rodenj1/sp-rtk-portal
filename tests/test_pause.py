@@ -17,7 +17,7 @@ import pytest
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
 from .harness.fake_authentik import FakeAuthentik
-from .harness.pages import base_card
+from .harness.pages import base_card, fields
 from .harness.portal import Browser, Portal
 from .harness.server import serving
 from .harness.session_bar import status_channel
@@ -143,6 +143,9 @@ async def test_pausing_cuts_live_remote_sessions_and_revokes_their_tokens(
         ended = await bar.until("ended")
 
     assert ended["reason"] == "paused"
+    page = fields((await operator.get(f"/bases/{base_id}")).text)
+    assert page["status"] == ["Remote access paused"]
+    assert "remote-paused" in page
     assert tunnels.lookup(base_id, session.token) is None
     assert not tunnels.tunnel_up(base_id)
     assert (await agent.status()).tunnel == "closed"
