@@ -9,11 +9,47 @@
 <h1>Your bases</h1>
 {% if bases %}
 <ul class="bases">
-  {% for base in bases %}
-  <li data-base="{{ base.id }}">
-    <span class="name">{{ base.name }}</span>
-    <span class="state">{% if base.last_seen_at %}Last seen {{ base.last_seen_at | utc }} UTC{% else %}Never seen{% endif %}</span>
-    {% if base.software_version %}<span class="version">sp-rtk-base {{ base.software_version }}</span>{% endif %}
+  {% for card in bases %}
+  {% set base = card.base %}
+  <li data-base="{{ base.id }}" data-state="{{ card.state }}">
+    <div class="base-head">
+      <span class="name">{{ base.name }}</span>
+      <span class="state state-{{ card.state }}" data-field="state">{{ card.state_label }}</span>
+      {% if base.last_seen_at %}
+      <span class="seen">last seen <time data-field="last-seen" datetime="{{ base.last_seen_at.isoformat() }}">{{ base.last_seen_at | utc }} UTC</time></span>
+      {% endif %}
+    </div>
+    <dl class="facts">
+      {% if base.software_version %}
+      <dt>Version</dt>
+      <dd><span data-field="version">sp-rtk-base {{ base.software_version }}</span>
+        {% if base.protocol_version %}· <span data-field="protocol">Protocol {{ base.protocol_version }}</span>{% endif %}
+        {% if card.update %}· <span class="info" data-field="update">sp-rtk-base {{ card.update }} available</span>{% endif %}
+      </dd>
+      {% endif %}
+      <dt>Wake</dt>
+      <dd><span data-field="wake-mode">{% if base.doorbell == "ok" %}Doorbell{% else %}Polling every {{ card.poll_interval }} s{% if base.metered %} (metered){% endif %}{% endif %}</span>
+        · <span data-field="doorbell">Doorbell: {{ base.doorbell }}</span></dd>
+      {% if base.lan_addresses %}
+      <dt>LAN</dt>
+      <dd><ul class="lan">
+        {% for a in base.lan_addresses %}
+        <li data-field="lan">{{ a.address }} ({{ a.interface }}{% if a.primary %}, primary{% endif %})</li>
+        {% endfor %}
+      </ul></dd>
+      {% endif %}
+      {% if base.public_ip %}
+      <dt>Public IP</dt>
+      <dd data-field="public-ip">{{ base.public_ip }}</dd>
+      {% endif %}
+    </dl>
+    {% for text in notices %}
+    <p class="notice" data-field="notice">{{ text }}</p>
+    {% endfor %}
+    <form class="metered" data-action="/bases/{{ base.id }}/metered">
+      <input type="hidden" name="metered" value="{{ 'false' if base.metered else 'true' }}">
+      <button type="submit">{% if base.metered %}Unmark metered{% else %}Mark metered (polls less often){% endif %}</button>
+    </form>
   </li>
   {% endfor %}
 </ul>

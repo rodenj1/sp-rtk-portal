@@ -22,6 +22,7 @@ from sp_rtk_portal.accounts.deps import (
 )
 from sp_rtk_portal.accounts.events import AccountEvents
 from sp_rtk_portal.agent_api import routes as agent_routes
+from sp_rtk_portal.agent_api import settings_routes
 from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
 from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.clock import Clock, SystemClock
@@ -70,6 +71,9 @@ def create_app(
     app.add_middleware(PortalSecurityMiddleware, origin=settings.public_origin)
     app.add_exception_handler(SignInRequired, _sign_in_required)
     app.add_exception_handler(AgentRefused, agent_refused)
+    app.add_exception_handler(
+        settings_routes.NotPortalOwner, settings_routes.not_portal_owner
+    )
     app.mount("/static", static_files(), name="static")
     app.include_router(health.router)
     app.include_router(account_routes.router)
@@ -77,6 +81,7 @@ def create_app(
     app.include_router(account_page_routes.router)
     app.include_router(base_routes.router)
     app.include_router(agent_routes.router)
+    app.include_router(settings_routes.router)
     return app
 
 

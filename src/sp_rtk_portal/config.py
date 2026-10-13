@@ -31,6 +31,12 @@ class Settings:
     claim_lifetime: timedelta = timedelta(minutes=10)
     claim_poll_interval: int = 5
     max_bases_per_account: int = 25
+    # The Portal owner(s): may edit the agent config, notices and the latest
+    # sp-rtk-base release on /settings. Matched on a verified email.
+    owner_emails: tuple[str, ...] = ()
+    # The oldest agent protocol version still served; older agents get 426.
+    # Raise it only after at least 6 months' notice to affected Operators.
+    min_protocol_version: int = 1
 
     @property
     def oidc_issuer(self) -> str:
@@ -66,7 +72,12 @@ class Settings:
             **opt("oidc_app_slug"),
             **{
                 name: int(env[f"PORTAL_{name.upper()}"])
-                for name in ("max_bases_per_account",)
+                for name in ("max_bases_per_account", "min_protocol_version")
                 if f"PORTAL_{name.upper()}" in env
             },
+            owner_emails=tuple(
+                e.strip().lower()
+                for e in env.get("PORTAL_OWNER_EMAILS", "").split(",")
+                if e.strip()
+            ),
         )

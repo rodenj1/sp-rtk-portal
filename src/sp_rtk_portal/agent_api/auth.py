@@ -21,12 +21,14 @@ from sp_rtk_portal_protocol import (
     Message,
     MessageError,
     ProofError,
+    UpgradeRequired,
     VerifiedProof,
     proof_from_authorization,
     verify_proof,
     version_from_header,
 )
 
+from sp_rtk_portal.bases import presence
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.web.client_ip import client_ip
 
@@ -39,7 +41,22 @@ class AgentRefused(Exception):
     def __init__(self, status: int, error: str, description: str = "") -> None:
         super().__init__(f"{error}: {description}")
         self.status = status
-        self.reply = ErrorReply(error=error, error_description=description)
+        self.reply: Message = ErrorReply(error=error, error_description=description)
+
+
+class AgentTooOld(AgentRefused):
+    """426: the agent's protocol version is no longer supported."""
+
+    def __init__(self, version: int, min_version: int) -> None:
+        super().__init__(426, "upgrade_required")
+        self.reply = UpgradeRequired(
+            min_version=min_version,
+            message=(
+                f"This sp-rtk-base speaks Portal protocol {version}; the Portal "
+                f"needs {min_version} or later. Upgrade sp-rtk-base to keep "
+                "using the Portal."
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -81,13 +98,24 @@ async def agent_request(
         raise AgentRefused(
             400, ErrorReply.INVALID_REQUEST, f"missing {VERSION_HEADER} header"
         )
+    ip = client_ip(request)
+    minimum = ctx.settings.min_protocol_version
+    if version < minimum:
+        log.info("refused protocol %s from %s (needs %s)", version, ip, minimum)
+        async with ctx.db.connection() as conn:
+            await presence.refused_as_too_old(
+                conn,
+                thumbprint=proof.thumbprint,
+                now=now,
+                protocol_version=version,
+                ip=ip,
+            )
+        raise AgentTooOld(version, minimum)
     try:
         body = json.loads(raw) if raw else {}
     except ValueError as exc:
         raise AgentRefused(400, ErrorReply.INVALID_REQUEST, "body isn't JSON") from exc
-    return AgentRequest(
-        proof=proof, body=body, protocol_version=version, ip=client_ip(request)
-    )
+    return AgentRequest(proof=proof, body=body, protocol_version=version, ip=ip)
 
 
 async def agent_refused(request: Request, exc: Exception) -> Response:

@@ -5,22 +5,29 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from sp_rtk_portal_protocol import (
+    CHECK_IN_PATH,
     CLAIM_TOKEN_PATH,
     CLAIMS_PATH,
+    POLL_PATH,
+    CheckIn,
+    CheckInReply,
     Claimed,
     ClaimStart,
     ClaimStarted,
     ClaimToken,
     ErrorReply,
+    Poll,
+    PollReply,
 )
 
+from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.agent_api.auth import (
     AgentRefused,
     AgentRequest,
     agent_request,
     reply,
 )
-from sp_rtk_portal.bases import claims
+from sp_rtk_portal.bases import claims, presence
 from sp_rtk_portal.context import PortalContext, portal_context
 
 router = APIRouter()
@@ -80,3 +87,56 @@ async def collect_claim(
     if isinstance(result, Claimed):
         return reply(result)
     return reply(ErrorReply(error=result), 400)
+
+
+# --- Polls and Check-ins (ADR 0002) -----------------------------------------
+
+
+def _unclaimed() -> AgentRefused:
+    return AgentRefused(401, ErrorReply.UNCLAIMED, "no base has this key")
+
+
+@router.post(POLL_PATH)
+async def poll(
+    req: AgentRequest = Depends(agent_request),
+    ctx: PortalContext = Depends(portal_context),
+) -> JSONResponse:
+    """A sign of life. The reply carries the agent config block, the metered
+    flag and the notices (and, from #88, a Wake)."""
+    req.message(Poll)
+    async with ctx.db.connection() as conn:
+        seen = await presence.polled(
+            conn,
+            thumbprint=req.proof.thumbprint,
+            now=ctx.clock.now(),
+            protocol_version=req.protocol_version,
+            ip=req.ip,
+        )
+        if seen is None:
+            raise _unclaimed()
+        config = await agent_config.current(conn, ctx.settings)
+        notices = await agent_config.wire_notices(conn)
+    return reply(PollReply(config=config, metered=seen.metered, notices=notices))
+
+
+@router.post(CHECK_IN_PATH)
+async def check_in(
+    req: AgentRequest = Depends(agent_request),
+    ctx: PortalContext = Depends(portal_context),
+) -> JSONResponse:
+    """The slow status report: versions, Doorbell health, LAN addresses."""
+    msg = req.message(CheckIn)
+    async with ctx.db.connection() as conn:
+        seen = await presence.checked_in(
+            conn,
+            thumbprint=req.proof.thumbprint,
+            now=ctx.clock.now(),
+            protocol_version=req.protocol_version,
+            ip=req.ip,
+            check_in=msg,
+        )
+        if seen is None:
+            raise _unclaimed()
+        config = await agent_config.current(conn, ctx.settings)
+        notices = await agent_config.wire_notices(conn)
+    return reply(CheckInReply(config=config, metered=seen.metered, notices=notices))
