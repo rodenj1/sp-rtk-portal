@@ -66,7 +66,8 @@ class Settings:
     base_ui_port: int = 8080
     # Client IP (ticket #98): CF-Connecting-IP is believed only on requests
     # whose peer is in one of these networks (the cloudflared pods). Empty:
-    # never believed, every request is untrusted (no client IP).
+    # never believed, every request is untrusted (no client IP). From the
+    # environment it must be set: ``none`` asks for empty on purpose.
     trusted_proxies: tuple[str, ...] = ()
     # Rate limits (ticket #98). A poll or Check-in sooner than
     # agent_min_spacing x its interval after the last is refused 429 once
@@ -154,14 +155,34 @@ class Settings:
                 if "PORTAL_SMTP_STARTTLS" in env
                 else {}
             ),
-            trusted_proxies=tuple(
-                n.strip()
-                for n in env.get("PORTAL_TRUSTED_PROXIES", "").split(",")
-                if n.strip()
-            ),
+            trusted_proxies=_trusted_proxies(env),
             owner_emails=tuple(
                 e.strip().lower()
                 for e in env.get("PORTAL_OWNER_EMAILS", "").split(",")
                 if e.strip()
             ),
         )
+
+
+TRUSTED_PROXIES_NONE = "none"
+
+
+class TrustedProxiesUnset(ValueError):
+    """``PORTAL_TRUSTED_PROXIES`` is missing or empty."""
+
+
+def _trusted_proxies(env: dict[str, str]) -> tuple[str, ...]:
+    """The cloudflared networks. Unset is refused: every request would then
+    share one "untrusted" client IP, so per-IP limits would hit the whole
+    fleet at once and possible-copy detection would be off. ``none`` says
+    "no client IPs, I know" (development)."""
+    raw = env.get("PORTAL_TRUSTED_PROXIES", "").strip()
+    if raw.lower() == TRUSTED_PROXIES_NONE:
+        return ()
+    networks = tuple(n.strip() for n in raw.split(",") if n.strip())
+    if not networks:
+        raise TrustedProxiesUnset(
+            "PORTAL_TRUSTED_PROXIES must be set: the cloudflared pods' "
+            "networks (e.g. 10.244.0.0/16), or 'none' for no client IPs"
+        )
+    return networks
