@@ -29,6 +29,7 @@ from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Database
+from sp_rtk_portal.proxy.middleware import BaseProxy
 from sp_rtk_portal.tunnel import routes as tunnel_routes
 from sp_rtk_portal.tunnel.broker import TunnelBroker
 from sp_rtk_portal.web.security import SAFE_METHODS, PortalSecurityMiddleware
@@ -74,9 +75,11 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.portal = ctx
-    # Added last runs first: the security guard sees every request first.
+    # Added last runs first: the base proxy, then the security guard.
     app.add_middleware(SessionRenewalMiddleware)
     app.add_middleware(PortalSecurityMiddleware, origin=settings.public_origin)
+    # Outermost: ``/b/`` is the base proxy, which nothing else may touch.
+    app.add_middleware(BaseProxy, ctx=ctx)
     app.add_exception_handler(SignInRequired, _sign_in_required)
     app.add_exception_handler(AgentRefused, agent_refused)
     app.add_exception_handler(
