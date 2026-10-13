@@ -25,6 +25,7 @@ from sp_rtk_portal.agent_api import routes as agent_routes
 from sp_rtk_portal.agent_api import settings_routes
 from sp_rtk_portal.agent_api.auth import AgentRefused, agent_refused
 from sp_rtk_portal.bases import routes as base_routes
+from sp_rtk_portal.bases.copies import CopyWatch
 from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
@@ -73,6 +74,7 @@ def create_app(
         mailer=Mailer(settings),
         doorbell=Doorbell(clock, tunnels),
         limits=Limiter(clock),
+        copies=CopyWatch(),
     )
     ctx.base_events.on_unclaimed(sharing.unclaimed)
 

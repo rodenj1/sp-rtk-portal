@@ -23,7 +23,7 @@ from sp_rtk_portal_protocol import (
     doorbell,
 )
 
-from sp_rtk_portal.bases import presence
+from sp_rtk_portal.bases import copies, presence
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.db import Connection
 
@@ -56,13 +56,19 @@ async def keepalives(
         raise HTTPException(400, "not a keepalives report") from exc
     if len(report.keepalives) > MAX_KEEPALIVES:
         raise HTTPException(413, "too many keepalives in one report")
+    heard: list[tuple[str, str]] = []  # (base id, its public IP)
     async with ctx.db.connection() as conn:
-        results = [await _keepalive(conn, ctx, k) for k in report.keepalives]
+        results = [await _keepalive(conn, ctx, k, heard) for k in report.keepalives]
+    for base_id, address in heard:  # signs of life from an address: #98
+        await copies.watch(ctx, base_id, address)
     return JSONResponse(KeepalivesReply(results=results).to_json())
 
 
 async def _keepalive(
-    conn: Connection, ctx: PortalContext, heard: HeardKeepalive
+    conn: Connection,
+    ctx: PortalContext,
+    heard: HeardKeepalive,
+    signs_of_life: list[tuple[str, str]],
 ) -> str:
     now = ctx.clock.now()
     try:
@@ -83,6 +89,7 @@ async def _keepalive(
     if not ctx.doorbell.heard(base, claimed, heard.address, heard.port):
         return doorbell.KEEPALIVE_INVALID
     await presence.rang(conn, base_id=base.id, now=now)
+    signs_of_life.append((base.id, str(ipaddress.ip_address(heard.address))))
     return doorbell.KEEPALIVE_OK
 
 

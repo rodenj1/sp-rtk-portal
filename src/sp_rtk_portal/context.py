@@ -15,6 +15,7 @@ from starlette.requests import HTTPConnection
 from sp_rtk_portal.accounts.attempts import PendingAttempts
 from sp_rtk_portal.accounts.authentik import Authentik
 from sp_rtk_portal.accounts.events import AccountEvents
+from sp_rtk_portal.bases.copies import CopyWatch
 from sp_rtk_portal.bases.events import BaseEvents
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
@@ -48,6 +49,8 @@ class PortalContext:
     doorbell: Doorbell
     # Rate-limit counters (process-local, #98).
     limits: Limiter
+    # Who polled from where lately, to notice a copied base (#98).
+    copies: CopyWatch
 
 
 def portal_context(conn: HTTPConnection) -> PortalContext:

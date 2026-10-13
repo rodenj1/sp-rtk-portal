@@ -32,7 +32,7 @@ from sp_rtk_portal.agent_api.auth import (
     agent_request,
     reply,
 )
-from sp_rtk_portal.bases import claims, online, presence, unclaim
+from sp_rtk_portal.bases import claims, copies, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.web.client_ip import rate_key
 
@@ -141,9 +141,11 @@ async def poll(
     async with ctx.db.connection() as conn:
         config = await agent_config.current(conn, ctx.settings)
         base = await presence.pace(conn, req.proof.thumbprint)
-        if base is None:
-            raise _unclaimed()
-        _keep_pace(ctx, "poll", base.base_id, _poll_interval(config, base))
+    if base is None:
+        raise _unclaimed()
+    await copies.watch(ctx, base.base_id, req.ip)
+    _keep_pace(ctx, "poll", base.base_id, _poll_interval(config, base))
+    async with ctx.db.connection() as conn:
         seen = await presence.polled(
             conn,
             thumbprint=req.proof.thumbprint,
@@ -173,13 +175,15 @@ async def check_in(
     reply says whether the Portal hears the base's Doorbell, and gives it its
     ring key while the agent config names a Doorbell host."""
     msg = req.message(CheckIn)
-    now = ctx.clock.now()
     async with ctx.db.connection() as conn:
         config = await agent_config.current(conn, ctx.settings)
         base = await presence.pace(conn, req.proof.thumbprint)
-        if base is None:
-            raise _unclaimed()
-        _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
+    if base is None:
+        raise _unclaimed()
+    await copies.watch(ctx, base.base_id, req.ip)
+    _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
+    now = ctx.clock.now()
+    async with ctx.db.connection() as conn:
         seen = await presence.checked_in(
             conn,
             thumbprint=req.proof.thumbprint,

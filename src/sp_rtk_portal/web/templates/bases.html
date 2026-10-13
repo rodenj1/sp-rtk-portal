@@ -51,6 +51,9 @@
       <dd data-field="public-ip">{{ base.public_ip }}</dd>
       {% endif %}
     </dl>
+    {% if base.possible_copy_at %}
+    <p class="warning" data-field="possible-copy" role="alert">Possible copy: this base's key was used from {{ base.possible_copy_ips | join(" and ") }} in turns ({{ base.possible_copy_at | utc }} UTC), as if its SD card had been copied. Nothing was blocked.{% if base.role == "operator" %} If you didn't copy it, Un-claim the base and Claim it again from its own Portal page to give it a new key.{% endif %}</p>
+    {% endif %}
     {% for text in notices %}
     <p class="notice" data-field="notice">{{ text }}</p>
     {% endfor %}
