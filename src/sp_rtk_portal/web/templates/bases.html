@@ -61,7 +61,7 @@
       <span class="local-here" data-field="local-confirmed">On this network</span>
       <a class="button" data-field="go-local" href="{{ lan.url }}" rel="noreferrer">Open locally</a>
       <form data-action="/bases/{{ base.id }}/remote">
-        <button type="submit" class="secondary" data-field="open-remotely-instead">Open remotely instead</button>
+        <button type="submit" class="secondary" data-field="open-remotely-instead"{% if card.state == "paused" %} disabled title="Remote access is paused on the base; it can only be resumed there."{% endif %}>Open remotely instead</button>
       </form>
     </div>
     {% endif %}
@@ -70,7 +70,7 @@
       <a class="button" data-field="open-locally" href="{{ lan.url }}" rel="noreferrer">Open locally ({{ lan.address }})</a>
       {% endif %}
       <form data-action="/bases/{{ base.id }}/remote">
-        <button type="submit" {% if lan and lan.first %}class="secondary" {% endif %}data-field="open-remotely">Open remotely</button>
+        <button type="submit" {% if lan and lan.first %}class="secondary" {% endif %}data-field="open-remotely"{% if card.state == "paused" %} disabled title="Remote access is paused on the base; it can only be resumed there."{% endif %}>Open remotely</button>
       </form>
       {% if lan and not lan.first %}
       <a class="secondary-link" data-field="open-locally" href="{{ lan.url }}" rel="noreferrer">Open locally ({{ lan.address }})</a>

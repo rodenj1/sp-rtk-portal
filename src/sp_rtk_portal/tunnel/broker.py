@@ -61,6 +61,8 @@ TOKEN_BYTES = 32
 
 LEFT = "left"
 HARD_CAP = "hard_cap"
+PAUSED = "paused"
+"""Remote access was paused on the base."""
 UN_CLAIM = "un_claim"
 
 WAKE_GRACE = timedelta(seconds=15)
@@ -280,6 +282,10 @@ class TunnelBroker:
 
     def _live(self, base_id: str) -> list[RemoteSession]:
         return [s for s in self._sessions.values() if s.base_id == base_id]
+
+    def live_sessions(self, base_id: str) -> list[RemoteSession]:
+        """The base's live Remote sessions, oldest first."""
+        return sorted(self._live(base_id), key=lambda s: (s.started_at, s.id))
 
     def session_for(self, account_id: int, base_id: str) -> RemoteSession | None:
         for session in self._sessions.values():

@@ -3,7 +3,8 @@
 ``base_card(html, base_id)`` -> ``{field: [text, ...]}`` for the base's
 ``<li data-base="<id>">`` in the list; ``fields(html)`` does the same for a
 whole page. Attributes of the base's ``<li>`` come as ``@name``; a field's
-``datetime`` and ``href`` as ``<field>@datetime`` / ``<field>@href``. Fields
+``datetime``, ``href`` and ``disabled`` as ``<field>@datetime`` /
+``<field>@href`` / ``<field>@disabled``. Fields
 come in the order the page first shows them.
 """
 
@@ -40,7 +41,7 @@ class _Fields(HTMLParser):
             field = a["data-field"] or ""
             self.found.setdefault(field, []).append("")
             self._open.append((field, self._level))
-            for attr in ("datetime", "href"):
+            for attr in ("datetime", "href", "disabled"):
                 if attr in a:
                     self.found.setdefault(f"{field}@{attr}", []).append(a[attr] or "")
 

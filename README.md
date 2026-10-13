@@ -89,6 +89,9 @@ On the base's own LAN the user can skip the Portal: each base in the list has "O
 ## Un-claim
 
 An Operator Un-claims a base on the Portal (`POST /bases/<id>/unclaim`, the list's Un-claim button; anyone else gets 404), or the base does it from its local Portal page with a signed `POST /agent/release`. Either way the Portal deletes the base record and its key, runs the `ctx.base_events.on_unclaimed` hooks (Shares remove themselves there), writes an `unclaim` audit entry, then ends the base's Remote sessions (reason `un_claim`, revoking their `/b/` tokens) and closes its tunnel. An agent Un-claimed on the Portal learns it from the 401 `unclaimed` on its next request and wipes its key. Claiming again makes a new key and `<id>`.
+## Remote access paused
+
+An Operator on site can pause remote access from the base's local Portal page. The agent keeps its key and Claim and keeps polling, but each poll says `paused` and it ignores any Wake. On that poll the Portal ends the base's live Remote sessions (reason `paused`, tokens revoked), closes its tunnel and audits the pause; the base list shows "Remote access paused" with Open remotely disabled (and `POST /bases/<id>/remote` answers 409). Only the base can resume. Each poll reply also lists the base's live Remote sessions (who and since when) for its local Portal page.
 
 ## Shares
 

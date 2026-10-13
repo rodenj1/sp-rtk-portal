@@ -9,6 +9,7 @@ from sp_rtk_portal_protocol import (
     CheckIn,
     CheckInReply,
     LanAddress,
+    LiveSession,
     MessageError,
     Notice,
     Poll,
@@ -126,3 +127,21 @@ def test_a_poll_reply_carries_a_wake_nonce_only_when_there_is_one():
     assert PollReply.from_json(woken.to_json()).wake == "n0nce"
     # An older Portal's reply has no wake field at all.
     assert PollReply.from_json({"config": {"revision": 1}}).wake is None
+
+
+def test_a_poll_reply_carries_the_live_remote_sessions():
+    reply = PollReply(
+        config=AgentConfig(revision=1),
+        sessions=[
+            LiveSession(who="op@example.com", since="2026-01-01T12:00:00+00:00"),
+            LiveSession(
+                who="sam@example.com", since="2026-01-01T12:05:00+00:00", shared=True
+            ),
+        ],
+    )
+
+    assert PollReply.from_json(reply.to_json()) == reply
+
+
+def test_an_older_portals_poll_reply_has_no_sessions():
+    assert PollReply.from_json({"config": {"revision": 1}}).sessions == []
