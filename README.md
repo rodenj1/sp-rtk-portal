@@ -35,6 +35,7 @@ Configuration is read from the environment:
 | `PORTAL_MAX_BASES_PER_ACCOUNT` | Claimed bases per account, default 25 |
 | `PORTAL_OWNER_EMAILS` | Comma-separated verified emails of the Portal owner(s), who get `/settings` (agent config, notices, latest sp-rtk-base release) |
 | `PORTAL_MIN_PROTOCOL_VERSION` | Oldest agent protocol version served, default 1; older agents get 426 and their bases show "needs upgrade". Raise it only after 6 months' notice (a notice on `/settings`) |
+| `PORTAL_DOORBELL_TOKEN` | The Doorbell server's bearer token for `/doorbell/*`. Unset (v1, no Doorbell server): those paths answer 404 |
 | `PORTAL_HOST`, `PORTAL_PORT`, `PORTAL_LOG_LEVEL` | Default `0.0.0.0`, `8000`, `INFO` |
 
 ```sh
@@ -53,6 +54,25 @@ A Claimed base polls `POST /agent/poll` every 20 s (60 s when its Operator marks
 "Open remotely" (`POST /bases/<id>/remote`) starts the user's Remote session on the base (one per user per base, shared by their tabs) and Wakes the base: its next poll reply carries a one-time nonce. The agent then opens `wss://<Portal>/agent/tunnel` with a GET signed by its base key that echoes the nonce; any other open is refused with 403 before the websocket is accepted. Inside, the protocol package's framing multiplexes streams, each to the base's own UI on `127.0.0.1:8080` (a stream can't name a destination). One tunnel per base serves all its Remote sessions.
 
 The Session bar page `/bases/<id>` shows Waking (with the poll-interval hint) and then Connected over a status websocket, `/bases/<id>/session`, on the Portal's own origin. While one is open its user is present. A Remote session ends when nobody has been present for the agent config's idle timeout (2 min), or at its hard cap (60 min); its path token is revoked at once and, when it was the base's last, the tunnel is closed. Remote session start and end are audited. All of this is in-process state (one Portal instance); a restart ends every Remote session.
+
+## The Doorbell
+
+Polling is all v1 deploys (ADR 0002 records when to add the Doorbell server). The agent already supports a Doorbell, and the Portal already has the HTTPS interface a Doorbell server uses, so adding one is: run the server, set `PORTAL_DOORBELL_TOKEN` on both, and set the Doorbell host and port on `/settings`.
+
+- **On the base.** With a Doorbell host in the agent config that resolves to a public address (checked before every packet; a private, loopback or link-local answer is ignored and logged, and the base stays on polling), the agent sends a keepalive signed by its base key every 20 s ± 5 s, from one UDP socket. That holds a return path open through its router. Once a Check-in reply says the Portal hears the keepalives, the agent stops polling (wake mode Doorbell: the list shows "Doorbell", the local page too) and only Checks in; if the Portal stops hearing them, the next Check-in reply puts it back on polling.
+- **Online state.** A relayed, verified keepalive is a sign of life. A base on a Doorbell is offline after 3 missed keepalives (75 s), not 3 missed polls.
+- **Rings.** Every Wake also asks for a ring. A ring is a UDP packet carrying only the Wake's one-time nonce, authenticated with the base's ring key (a per-base secret the Portal hands the agent in Check-in replies). The agent then opens its tunnel exactly as for a polled Wake, echoing the nonce in a request signed by its base key, so a forged ring can only cause a refused tunnel attempt. A base that isn't on a Doorbell still gets the Wake in its next poll.
+
+### Doorbell server interface
+
+The Doorbell server holds no keys: it relays packets and the Portal checks them. Both requests carry `Authorization: Bearer <PORTAL_DOORBELL_TOKEN>`; without it (or with another) they get 401. Bodies are the protocol package's `sp_rtk_portal_protocol.doorbell` shapes; packets travel base64url-encoded without padding (`encode_packet`/`decode_packet`).
+
+- `POST /doorbell/keepalives` with `{"keepalives": [{"packet": "<base64url datagram>", "address": "<source IP>", "port": <source port>}, ...]}` (up to 1000) → `{"results": ["ok" | "unknown" | "invalid", ...]}`, one per keepalive in order. `ok`: signed by a Claimed base's key, within 60 s of the Portal's clock and newer than the last one from that base; the Portal records the sign of life and the return path. `unknown`: no Claimed base has that key. `invalid`: anything else (not a keepalive, bad signature, stale or replayed). Relay keepalives as they arrive (batching delays sign of life and rings).
+- `GET /doorbell/rings?wait=<seconds>` (long poll, at most 30 s) → `{"rings": [{"address": ..., "port": ..., "packet": "<base64url datagram>"}, ...]}` as soon as any are due, or an empty list after `wait`. Send each packet to its address and port **from the socket the keepalives arrived on** (that's the path the base's router holds open). Call again at once. A Wake is rung up to 5 times, 2 s apart, until the base opens its tunnel.
+
+The packets (`protocol/src/sp_rtk_portal_protocol/doorbell.py`): a keepalive is 109 bytes (`SPDB`, kind 1, time, the key's thumbprint, an Ed25519 signature; the spec's "~32 B" can't hold a signature); a ring is `SPDB`, kind 2, time, the nonce and an HMAC-SHA256. The return paths and pending rings live in the Portal's memory (one instance), so a restart forgets paths until the next keepalives (20 s).
+
+`tests/test_doorbell.py` runs the real agent against a stub Doorbell server (`tests/harness/doorbell_server.py`) that does exactly the above over real UDP.
 
 ## Container image
 
