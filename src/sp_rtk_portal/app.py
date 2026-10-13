@@ -33,6 +33,7 @@ from sp_rtk_portal.db import Database
 from sp_rtk_portal.mail import Mailer
 from sp_rtk_portal.proxy.middleware import BaseProxy
 from sp_rtk_portal.shares import routes as share_routes
+from sp_rtk_portal.shares import sharing
 from sp_rtk_portal.tunnel import routes as tunnel_routes
 from sp_rtk_portal.tunnel.broker import TunnelBroker
 from sp_rtk_portal.web.security import SAFE_METHODS, PortalSecurityMiddleware
@@ -65,6 +66,7 @@ def create_app(
         tunnels=TunnelBroker(settings, clock, db),
         mailer=Mailer(settings),
     )
+    ctx.base_events.on_unclaimed(sharing.unclaimed)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

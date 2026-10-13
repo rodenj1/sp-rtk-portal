@@ -432,3 +432,45 @@ async def test_a_withdrawn_pending_share_never_converts(
     colleague = await users.sign_in(COLLEAGUE)
 
     assert base_id not in (await colleague.get("/")).text
+
+
+# --- Un-claim -------------------------------------------------------------------------------
+
+
+async def test_a_shared_user_cannot_unclaim_the_base(
+    operator: Browser, colleague: Browser, base_id: str
+):
+    resp = await colleague.action(f"/bases/{base_id}/unclaim")
+
+    assert resp.status_code == 404
+    assert base_card((await operator.get("/")).text, base_id)
+    assert base_card((await colleague.get("/")).text, base_id)
+
+
+async def test_unclaim_removes_the_bases_shares_and_pending_shares(
+    portal: Portal,
+    operator: Browser,
+    colleague: Browser,
+    agent: RunningAgent,
+    server: int,
+    base_id: str,
+    users: Users,
+):
+    await share(operator, base_id, "new@example.com")
+    frame = await open_remotely(colleague, agent, server, base_id)
+    ws = await frame_ws(server, frame)
+
+    resp = await operator.action(f"/bases/{base_id}/unclaim")
+
+    assert resp.json() == {"next": "/"}
+    await assert_cut(ws, colleague, server, frame)
+    assert base_id not in (await colleague.get("/")).text
+    newcomer = await users.sign_in("new@example.com")
+    assert base_id not in (await newcomer.get("/")).text
+    removed = [e for e in await share_audit(portal) if e["kind"].endswith("removed")]
+    assert removed == [
+        {"kind": "share_removed", "actor": OPERATOR, "base_id": base_id,
+         "ip": None, "email": COLLEAGUE},
+        {"kind": "pending_share_removed", "actor": OPERATOR, "base_id": base_id,
+         "ip": None, "email": "new@example.com"},
+    ]  # fmt: skip

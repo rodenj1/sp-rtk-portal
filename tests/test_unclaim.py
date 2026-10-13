@@ -291,11 +291,11 @@ async def test_un_claim_is_a_state_changing_request_under_the_request_guard(
 
 
 async def test_only_the_operator_can_un_claim_a_base(
-    portal: Portal, colleague: Browser, agent: RunningAgent
+    portal: Portal, operator: Browser, colleague: Browser, agent: RunningAgent
 ):
-    # Shares are #94: until then a Shared user is just another account, and
-    # #94 adds a real Share to this test.
     base_id = await base_of(agent)
+    shared = await operator.action(f"/bases/{base_id}/shares", {"email": OTHER})
+    assert shared.status_code == 200  # a Shared user, not just any account
 
     resp = await colleague.action(f"/bases/{base_id}/unclaim")
 
@@ -323,7 +323,7 @@ async def test_the_base_list_offers_un_claim(operator: Browser, agent: RunningAg
 async def test_un_claim_runs_the_unclaimed_hooks_in_its_transaction(
     portal: Portal, operator: Browser, agent: RunningAgent, where: str
 ):
-    # Shares (#94) hook in here to remove the base's Shares and Pending shares.
+    # Shares hook in here to remove the base's Shares and Pending shares.
     base_id = await base_of(agent)
     owner = await account_id(portal, EMAIL)
     seen: list[tuple[Unclaimed, int]] = []

@@ -10,6 +10,8 @@
   user, or the Shared user leaves; that user's live Remote sessions on the
   base end at once (their ``/b/`` token stops working).
 - ``remove_pending(ctx, ...)``: the Operator withdraws a Pending share.
+- ``unclaimed``: the ``BaseEvents.on_unclaimed`` hook (registered in
+  ``create_app``): Un-claim removes the base's Shares and Pending shares.
 
 Every change is audited in its own transaction; email is sent after commit.
 """
@@ -22,6 +24,7 @@ from datetime import datetime
 
 from sp_rtk_portal import audit
 from sp_rtk_portal.accounts.store import Account
+from sp_rtk_portal.bases.events import Unclaimed
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Connection
 from sp_rtk_portal.shares import store
@@ -254,6 +257,36 @@ async def remove_pending(
             detail={"email": email},
         )
     return True
+
+
+async def unclaimed(conn: Connection, event: Unclaimed) -> None:
+    """``BaseEvents`` hook: an Un-claimed base takes its Shares and Pending
+    shares with it (each audited as removed by the Operator). The broker
+    ends the Remote sessions after the commit."""
+    for user in await store.shared_users(conn, event.base_id):
+        await store.delete_share(conn, event.base_id, user.account_id)
+        await audit.record(
+            conn,
+            at=event.at,
+            kind=audit.SHARE_REMOVED,
+            account_id=event.owner_account_id,
+            base_id=event.base_id,
+            detail={
+                "shared_user": user.account_id,
+                "email": user.email.lower(),
+                "reason": "un_claim",
+            },
+        )
+    for pending in await store.pending_shares(conn, event.base_id, event.at):
+        await store.delete_pending(conn, event.base_id, pending.id)
+        await audit.record(
+            conn,
+            at=event.at,
+            kind=audit.PENDING_SHARE_REMOVED,
+            account_id=event.owner_account_id,
+            base_id=event.base_id,
+            detail={"email": pending.email, "reason": "un_claim"},
+        )
 
 
 # --- email --------------------------------------------------------------------------
