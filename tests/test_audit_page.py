@@ -270,3 +270,17 @@ async def test_an_entry_of_an_unknown_kind_still_shows_in_words(
         "ip": "192.0.2.5",
     }
     assert "base_relocated" not in [r["@data-kind"] for r in await audit(colleague)]
+
+
+async def test_pausing_remote_access_on_the_base_shows_as_done_by_the_base(
+    operator: Browser, agent: RunningAgent, base_id: str
+):
+    await agent.pause()
+    await agent.resume()
+
+    rows = await audit(operator)
+
+    assert [(r["what"], r["who"], r["base"], r["ip"]) for r in rows[:2]] == [
+        ("Remote access resumed on the base", "The base", BASE_NAME, BASE_IP),
+        ("Remote access paused on the base", "The base", BASE_NAME, BASE_IP),
+    ]
