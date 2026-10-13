@@ -36,7 +36,7 @@ from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from sp_rtk_base.portal_agent.client import read_status, start_claim
+from sp_rtk_base.portal_agent.client import pause, read_status, resume, start_claim
 from sp_rtk_base.portal_agent.control import PortalAgent, serve
 from sp_rtk_base.portal_agent.protocol import AgentStatus
 from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
@@ -202,6 +202,14 @@ class RunningAgent:
 
     async def status(self) -> AgentStatus:
         return await read_status(self.sock)
+
+    async def pause(self) -> AgentStatus:
+        """The local page's "Pause remote access" (tells the Portal at once)."""
+        return await pause(self.sock)
+
+    async def resume(self) -> AgentStatus:
+        """The local page's "Resume remote access"."""
+        return await resume(self.sock)
 
     async def run(self, **delta: float) -> None:
         """Let virtual time pass (``agent.run(seconds=60)``); the agent polls

@@ -21,6 +21,8 @@ TOTP_DISABLED = "totp_disabled"
 CLAIM = "claim"
 REMOTE_SESSION_START = "remote_session_start"
 REMOTE_SESSION_END = "remote_session_end"
+REMOTE_ACCESS_PAUSED = "remote_access_paused"
+REMOTE_ACCESS_RESUMED = "remote_access_resumed"
 
 
 async def record(

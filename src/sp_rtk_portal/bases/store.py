@@ -23,12 +23,14 @@ class BaseSummary:
     public_ip: str | None = None
     doorbell: str = "off"
     needs_upgrade: bool = False
+    remote_paused: bool = False
+    """Remote access paused on site: Open remotely is refused."""
 
 
 _COLUMNS = (
     "id, name, software_version, last_seen_at, protocol_version, metered,"
     " polled_metered, lan_addresses, host(public_ip) AS public_ip, doorbell,"
-    " needs_upgrade"
+    " needs_upgrade, remote_paused"
 )
 
 

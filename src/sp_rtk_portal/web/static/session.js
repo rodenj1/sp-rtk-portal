@@ -16,9 +16,14 @@
     none: "Not connected",
   };
 
-  function show(state) {
+  const reasons = {
+    paused: "Remote access was paused on the base",
+  };
+
+  function show(state, reason) {
     bar.dataset.state = state;
-    status.textContent = labels[state] || state;
+    status.textContent =
+      (state === "ended" && reasons[reason]) || labels[state] || state;
     bar.querySelectorAll("[data-show]").forEach((el) => {
       el.hidden = !el.dataset.show.split(" ").includes(state);
     });
@@ -32,7 +37,7 @@
   channel.addEventListener("message", (event) => {
     let msg = {};
     try { msg = JSON.parse(event.data); } catch (e) { return; }
-    if (msg.state) show(msg.state);
+    if (msg.state) show(msg.state, msg.reason);
   });
   // Ignore anything a framed page might post to us.
   window.addEventListener("message", (event) => event.stopImmediatePropagation(), true);

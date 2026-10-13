@@ -47,7 +47,7 @@
     <p class="notice" data-field="notice">{{ text }}</p>
     {% endfor %}
     <form class="open" data-action="/bases/{{ base.id }}/remote">
-      <button type="submit" data-field="open-remotely">Open remotely</button>
+      <button type="submit" data-field="open-remotely"{% if card.state == "paused" %} disabled title="Remote access is paused on the base; it can only be resumed there."{% endif %}>Open remotely</button>
     </form>
     <form class="metered" data-action="/bases/{{ base.id }}/metered">
       <input type="hidden" name="metered" value="{{ 'false' if base.metered else 'true' }}">

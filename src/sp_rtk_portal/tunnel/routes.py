@@ -34,6 +34,11 @@ router = APIRouter()
 
 POLICY_VIOLATION = 1008
 
+PAUSED_MESSAGE = (
+    "Remote access is paused on this base. Someone at the base can resume it"
+    " on its local Portal page."
+)
+
 
 # --- Open remotely and the Session bar ----------------------------------------
 
@@ -50,6 +55,8 @@ async def open_remotely(
         base = await store.reachable_by(conn, account.id, base_id)
     if base is None:
         return JSONResponse({"error": "No such base."}, status_code=404)
+    if base.remote_paused:
+        return JSONResponse({"error": PAUSED_MESSAGE}, status_code=409)
     await ctx.tunnels.start_session(account.id, base_id, client_ip(request))
     return JSONResponse({"next": f"/bases/{base_id}"})
 
