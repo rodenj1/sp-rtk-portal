@@ -83,6 +83,18 @@ def holds_no_key(agent: RunningAgent) -> bool:
     return left == []
 
 
+async def assert_refused_by_the_proxy(
+    browser: Browser, base_id: str, token: str
+) -> None:
+    """The ``/b/`` proxy refuses the path as a revoked token (as a frame load
+    from the Session bar, so it isn't refused for being outside a frame)."""
+    resp = await browser.http.get(
+        f"/b/{base_id}/s/{token}/", headers={"Sec-Fetch-Dest": "iframe"}
+    )
+    assert resp.status_code == 403
+    assert "has ended, or this link is not valid" in resp.text
+
+
 # --- Local Un-claim ------------------------------------------------------------------
 
 
@@ -199,7 +211,7 @@ async def test_a_portal_un_claim_cuts_live_remote_sessions_and_refuses_their_tok
     assert tunnels.session_for(owner, base_id) is None
     assert tunnels.state(session) == "ended"
     assert session.end_reason == "un_claim"
-    assert (await operator.get(f"/b/{base_id}/s/{token}/")).status_code >= 400
+    await assert_refused_by_the_proxy(operator, base_id, token)
     # Nor can anyone start a new one, or see its Session bar.
     assert (await operator.action(f"/bases/{base_id}/remote")).status_code == 404
     assert (await operator.get(f"/bases/{base_id}")).status_code == 404
@@ -367,4 +379,4 @@ async def test_claiming_again_makes_a_new_base_and_the_old_id_is_gone(
     assert (await operator.get(f"/bases/{old_id}")).status_code == 404
     assert (await operator.action(f"/bases/{old_id}/remote")).status_code == 404
     assert portal.context.tunnels.lookup(old_id, old_token) is None
-    assert (await operator.get(f"/b/{old_id}/s/{old_token}/")).status_code >= 400
+    await assert_refused_by_the_proxy(operator, old_id, old_token)
