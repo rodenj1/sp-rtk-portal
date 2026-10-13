@@ -23,7 +23,7 @@ from starlette.websockets import WebSocketDisconnect
 from sp_rtk_portal.accounts.deps import current_account, websocket_account
 from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.agent_api import config as agent_config
-from sp_rtk_portal.bases import online, store
+from sp_rtk_portal.bases import local, online, store
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.tunnel import bar
 from sp_rtk_portal.web.client_ip import client_ip
@@ -117,6 +117,12 @@ async def session_bar(
         poll_interval=online.interval(config, base.metered),
         last_seen=bar.last_seen(base),
         wake_mode=online.wake_mode(base, config),
+        local_access=local.local_access(
+            base.lan_addresses,
+            base.public_ip,
+            client_ip(request),
+            port=ctx.settings.base_ui_port,
+        ),
     )
 
 

@@ -123,6 +123,9 @@ async def test_didnt_wake_after_35_s_with_retry_and_offline_looks_different(w: W
     await expect(didnt).to_contain_text("North field didn't wake")
     await expect(w.locate("last-seen")).to_have_text("2026-01-01 12:00 UTC")
     await expect(w.locate("wake-mode")).to_have_text("Polling every 20 s")
+    await expect(didnt.locator("[data-field=open-locally]")).to_have_attribute(
+        "href", "http://192.168.1.20:8080/"
+    )
     await expect(w.locate("progress")).to_be_hidden()
     await expect(page.get_by_role("button", name="Try anyway")).to_be_hidden()
     didnt_color = await didnt.evaluate("e => getComputedStyle(e).borderLeftColor")
@@ -145,6 +148,9 @@ async def test_didnt_wake_after_35_s_with_retry_and_offline_looks_different(w: W
     await expect(offline).to_be_visible()
     await expect(offline).to_contain_text("is offline, last seen")
     await expect(page.get_by_role("button", name="Try anyway")).to_be_visible()
+    await expect(offline.locator("[data-field=open-locally]")).to_have_text(
+        "Open locally (192.168.1.20)"
+    )
     await expect(page.get_by_role("button", name="Retry")).to_be_hidden()
     await expect(w.locate("didnt-wake")).to_be_hidden()
     await expect(w.locate("progress")).to_be_hidden()

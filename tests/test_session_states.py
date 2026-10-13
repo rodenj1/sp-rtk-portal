@@ -277,3 +277,17 @@ async def test_presence_lists_the_other_connected_users_and_updates_when_they_le
                 {"name": EMAIL, "role": "Operator"}
             ]
         await eventually(lambda: mine.messages[-1]["present"] == [], "Sam left")
+
+
+async def test_offline_and_didnt_wake_offer_open_locally_at_the_lan_address(
+    portal: Portal, operator: Browser, agent: RunningAgent, server: int
+):
+    base_id = await base_of(agent)
+    agent.reachable = False
+
+    await open_remotely(operator, base_id)
+    await agent.run(seconds=35)  # Didn't wake
+    page = (await operator.get(f"/bases/{base_id}")).text
+    assert 'data-state="didnt_wake"' in page
+    assert 'href="http://192.168.1.20:8080/"' in page
+    assert "Open locally (192.168.1.20)" in page
