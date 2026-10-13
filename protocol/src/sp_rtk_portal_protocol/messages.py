@@ -220,6 +220,18 @@ class Poll(Message):
 
 
 @dataclass(frozen=True)
+class LiveSession(Message):
+    """A live Remote session on the base, for its local Portal page."""
+
+    who: str
+    """The user's email."""
+    since: str
+    """When the Remote session started (ISO 8601, UTC)."""
+    shared: bool = False
+    """The user has the base through a Share (not its Operator)."""
+
+
+@dataclass(frozen=True)
 class PollReply(Message):
     config: AgentConfig
     metered: bool = False
@@ -231,6 +243,9 @@ class PollReply(Message):
     at its own (checked) tunnel URL with a GET signed by its base key whose
     proof echoes this in its ``nonce`` claim. The Portal refuses any other
     nonce, so a forged Wake can only cause a refused tunnel attempt."""
+    sessions: list[LiveSession] = dataclasses.field(default_factory=list)
+    """The base's live Remote sessions, oldest first (protocol package
+    0.6.0): its local Portal page lists them."""
 
 
 @dataclass(frozen=True)

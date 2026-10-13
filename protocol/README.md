@@ -13,6 +13,7 @@ The agent-to-Portal protocol, published from the `sp-rtk-portal` repo so the Por
   - Messages may nest messages, lists of them and optional (`X | None`) fields.
   - A refused proof is HTTP 401 `ErrorReply("invalid_proof")`.
   - A Wake: `PollReply.wake` carries a one-time nonce (and nothing else).
+  - `PollReply.sessions`: the base's live Remote sessions (`LiveSession(who, since, shared)`), for its local Portal page. `Poll.state` is `paused` while remote access is paused on site; a paused agent ignores Wakes.
 - **Tunnel** (`tunnel.py`). The agent opens `wss://<Portal host>/agent/tunnel` with a GET signed for `https://<Portal host>/agent/tunnel` (`signed_url`) whose proof's `nonce` claim echoes the Wake. Each binary websocket message is one frame: a type byte, a big-endian 4-byte stream id, then the payload. Types: `NEW` (1, no payload ever: a stream never names a destination), `DATA` (2, 1..64 KiB), `CLOSE` (3), `PING`/`PONG` (4/5, stream 0), `PAUSE`/`RESUME` (6/7, flow control). An unknown type, a payload where none belongs, or a `NEW` from the agent raises `FrameError`, and the receiver closes the whole tunnel. `Tunnel` is one end of it (independent of the websocket library: give it a `send` coroutine and `feed` it each message); only the Portal end opens streams (`open_stream()` -> `Stream` with `read`/`write`/`close`).
 
 The package version (`pyproject.toml`) is bumped on every change, so a pinned consumer can tell which shapes it has.
