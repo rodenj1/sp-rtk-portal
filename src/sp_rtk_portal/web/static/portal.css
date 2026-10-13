@@ -45,3 +45,9 @@ main:has(.session-bar) { max-width: none; }
 .base-frame[hidden] { display: none; }
 .base-frame .frame-label { margin: 0; font-size: .8rem; color: #888; }
 .base-frame iframe { width: 100%; height: calc(100vh - 9rem); min-height: 24rem; border: 1px solid #8884; }
+.bases .open { display: flex; flex-wrap: wrap; gap: .5rem 1rem; align-items: center; }
+.bases .open[hidden] { display: none; }
+.bases .open form { margin: 0; }
+a.button { display: inline-block; padding: .5rem 1rem; border: 1px solid var(--accent); border-radius: .25rem; background: var(--accent); color: #fff; text-decoration: none; }
+.bases .local-here { color: #15803d; font-weight: 600; }
+.detect .hint { color: #888; font-size: .9rem; }
