@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sp_rtk_portal import audit
 from sp_rtk_portal.accounts import attempts, events, review, sessions
 from sp_rtk_portal.accounts.authentik import (
+    ACCESS_DENIED,
     AUTHENTICATOR_VALIDATE,
     IDENTIFICATION,
     PASSWORD,
@@ -289,7 +290,10 @@ def _pending(
 
 def _refused(outcome: Outcome) -> JSONResponse:
     if isinstance(outcome, Rejected):
-        if outcome.stage in (IDENTIFICATION, PASSWORD):
+        if outcome.stage in (IDENTIFICATION, PASSWORD, ACCESS_DENIED):
+            # ACCESS_DENIED: the account isn't in portal-users (the blueprint's
+            # deny stage). Answer as for a wrong password and never show
+            # Authentik's own message.
             return JSONResponse({"error": WRONG_PASSWORD}, status_code=401)
         return JSONResponse({"error": outcome.message}, status_code=400)
     return failed_closed(AuthentikFailedClosed(f"flow ended with {outcome!r}"), FAILED)
