@@ -53,17 +53,13 @@ from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
 from sp_rtk_portal.tunnel import store
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 log = logging.getLogger(__name__)
 
 TOKEN_BYTES = 32
 """Remote session path tokens: 256 random bits."""
 
-LEFT = "left"
-HARD_CAP = "hard_cap"
-PAUSED = "paused"
-"""Remote access was paused on the base."""
-UN_CLAIM = "un_claim"
 
 WAKE_GRACE = timedelta(seconds=15)
 """How much longer than one poll interval a Wake may take before the bar says
@@ -93,7 +89,7 @@ class RemoteSession:
     left_at: datetime | None = None
     """When the last status channel closed (start, until one opens)."""
     ended: bool = False
-    end_reason: str | None = None
+    end_reason: EndReason | None = None
     warned: bool = False
     """Its bars were told Still there? (until Keep going)."""
 
@@ -430,7 +426,7 @@ class TunnelBroker:
             base.changed.notify_all()
 
     async def end_session(
-        self, session: RemoteSession, reason: str, ip: str | None = None
+        self, session: RemoteSession, reason: EndReason, ip: str | None = None
     ) -> None:
         """End ``session`` and revoke its token; closes the base's tunnel if
         it was the last."""
@@ -458,7 +454,7 @@ class TunnelBroker:
 
     async def end_sessions(
         self,
-        reason: str,
+        reason: EndReason,
         *,
         account_id: int | None = None,
         base_id: str | None = None,
@@ -482,7 +478,7 @@ class TunnelBroker:
     async def forget_base(self, base_id: str) -> None:
         """The base was Un-claimed: end its Remote sessions (revoking their
         tokens), drop any pending Wake and close its tunnel."""
-        await self.end_sessions(UN_CLAIM, base_id=base_id)
+        await self.end_sessions(EndReason.UN_CLAIM, base_id=base_id)
         self._wakes.pop(base_id, None)
         await self.close_tunnel(base_id)
         await self._changed(base_id)
@@ -495,7 +491,7 @@ class TunnelBroker:
         now = self._clock.now()
         for session in list(self._sessions.values()):
             if now - session.started_at >= session.hard_cap:
-                await self.end_session(session, HARD_CAP)
+                await self.end_session(session, EndReason.HARD_CAP)
                 continue
             if not session.warned and self.still_there(session):
                 session.warned = True
@@ -505,7 +501,7 @@ class TunnelBroker:
                 and session.left_at is not None
                 and now - session.left_at >= session.idle_timeout
             ):
-                await self.end_session(session, LEFT)
+                await self.end_session(session, EndReason.LEFT)
         for base_id, pending in list(self._wakes.items()):
             if pending.expires_at <= now:
                 del self._wakes[base_id]

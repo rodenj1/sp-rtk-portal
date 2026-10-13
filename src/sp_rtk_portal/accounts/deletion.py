@@ -31,9 +31,7 @@ from sp_rtk_portal.bases.events import BY_ACCOUNT_DELETION
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Connection
 from sp_rtk_portal.shares import store as shares
-
-ACCOUNT_DELETED = "account_deleted"
-"""Remote session end reason, and ``share_left`` audit ``reason``."""
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 
 async def preview(conn: Connection, account_id: int) -> list[bases.BaseSummary]:
@@ -79,7 +77,7 @@ async def delete_account(ctx: PortalContext, account: Account, ip: str | None) -
                 detail={
                     "shared_user": account.id,
                     "email": email,
-                    "reason": ACCOUNT_DELETED,
+                    "reason": EndReason.ACCOUNT_DELETED,
                 },
             )
         await end_portal_sessions(conn, account.id)
@@ -98,4 +96,6 @@ async def delete_account(ctx: PortalContext, account: Account, ip: str | None) -
         )
     for base_id in unclaimed:
         await ctx.tunnels.forget_base(base_id)
-    await ctx.tunnels.end_sessions(ACCOUNT_DELETED, account_id=account.id, ip=ip)
+    await ctx.tunnels.end_sessions(
+        EndReason.ACCOUNT_DELETED, account_id=account.id, ip=ip
+    )

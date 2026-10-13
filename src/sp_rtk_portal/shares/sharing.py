@@ -28,11 +28,7 @@ from sp_rtk_portal.bases.events import Unclaimed
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Connection
 from sp_rtk_portal.shares import store
-
-UN_SHARE = "un_share"
-"""Remote session end reason: the Operator removed the Share."""
-SHARE_LEFT = "share_left"
-"""Remote session end reason: the Shared user left the Share."""
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 NOT_OPERATOR = "Only the base's Operator can Share it."
 BAD_EMAIL = "Enter an email address."
@@ -204,7 +200,9 @@ async def remove(
             ip=ip,
             detail={"shared_user": account_id, "email": email},
         )
-    await ctx.tunnels.end_sessions(UN_SHARE, account_id=account_id, base_id=base_id)
+    await ctx.tunnels.end_sessions(
+        EndReason.UN_SHARE, account_id=account_id, base_id=base_id
+    )
     return True
 
 
@@ -226,7 +224,9 @@ async def leave(
             ip=ip,
             detail={"shared_user": account_id, "email": email},
         )
-    await ctx.tunnels.end_sessions(SHARE_LEFT, account_id=account_id, base_id=base_id)
+    await ctx.tunnels.end_sessions(
+        EndReason.SHARE_LEFT, account_id=account_id, base_id=base_id
+    )
     return True
 
 
@@ -274,7 +274,7 @@ async def unclaimed(conn: Connection, event: Unclaimed) -> None:
             detail={
                 "shared_user": user.account_id,
                 "email": user.email.lower(),
-                "reason": "un_claim",
+                "reason": EndReason.UN_CLAIM,
             },
         )
     for pending in await store.pending_shares(conn, event.base_id, event.at):
@@ -285,7 +285,7 @@ async def unclaimed(conn: Connection, event: Unclaimed) -> None:
             kind=audit.PENDING_SHARE_REMOVED,
             account_id=event.owner_account_id,
             base_id=event.base_id,
-            detail={"email": pending.email, "reason": "un_claim"},
+            detail={"email": pending.email, "reason": EndReason.UN_CLAIM},
         )
 
 

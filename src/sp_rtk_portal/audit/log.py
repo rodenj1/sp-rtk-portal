@@ -20,6 +20,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sp_rtk_portal.db import Connection
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 RETENTION = timedelta(days=90)
 PAGE_SIZE = 200
@@ -117,16 +118,16 @@ OPERATOR_ACTS = frozenset(
 """Kinds where only the base's Operator can be someone else acting on the
 viewer (Sharing with them or taking the Share away)."""
 
-END_REASONS = {
-    "left": "idle",
-    "hard_cap": "time limit reached",
-    "portal_restart": "the Portal restarted",
-    "un_share": "Share removed",
-    "share_left": "left the Share",
-    "un_claim": "base Un-claimed",
-    "log_out_everywhere": "logged out everywhere",
-    "account_deleted": "account deleted",
-    "paused": "remote access paused on the base",
+END_REASONS: dict[str, str] = {
+    EndReason.LEFT: "idle",
+    EndReason.HARD_CAP: "time limit reached",
+    EndReason.PORTAL_RESTART: "the Portal restarted",
+    EndReason.UN_SHARE: "Share removed",
+    EndReason.SHARE_LEFT: "left the Share",
+    EndReason.UN_CLAIM: "base Un-claimed",
+    EndReason.LOG_OUT_EVERYWHERE: "logged out everywhere",
+    EndReason.ACCOUNT_DELETED: "account deleted",
+    EndReason.PAUSED: "remote access paused on the base",
 }
 TRIGGERS = {
     "button": "",
@@ -138,7 +139,10 @@ UNCLAIMED_BY = {
     "base": "from the base itself",
     "account_deleted": "when the account was deleted",
 }
-SHARE_REASONS = {"un_claim": "base Un-claimed", "account_deleted": "account deleted"}
+SHARE_REASONS: dict[str, str] = {
+    EndReason.UN_CLAIM: "base Un-claimed",
+    EndReason.ACCOUNT_DELETED: "account deleted",
+}
 
 LABELS = {
     "login": "Signed in",

@@ -14,9 +14,7 @@ from sp_rtk_portal.accounts import events, sessions
 from sp_rtk_portal.accounts.events import PasswordChanged
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Connection
-
-LOG_OUT_EVERYWHERE = "log_out_everywhere"
-"""Remote session end reason (and audit kind ``audit.LOG_OUT_EVERYWHERE``)."""
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 BUTTON = "button"
 """Audit ``trigger``: the user pressed "Log out everywhere"."""
@@ -38,7 +36,9 @@ async def log_out_everywhere(
             ip=ip,
             detail={"trigger": BUTTON},
         )
-    await ctx.tunnels.end_sessions(LOG_OUT_EVERYWHERE, account_id=account_id, ip=ip)
+    await ctx.tunnels.end_sessions(
+        EndReason.LOG_OUT_EVERYWHERE, account_id=account_id, ip=ip
+    )
 
 
 async def end_portal_sessions(
@@ -79,5 +79,5 @@ class LogOutEverywhere:
             detail={"trigger": TRIGGERS[event.how]},
         )
         await self._ctx.tunnels.end_sessions(
-            LOG_OUT_EVERYWHERE, account_id=event.account_id, ip=event.ip
+            EndReason.LOG_OUT_EVERYWHERE, account_id=event.account_id, ip=event.ip
         )

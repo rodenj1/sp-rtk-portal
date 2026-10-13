@@ -39,7 +39,7 @@ from sp_rtk_portal.agent_api.auth import (
 from sp_rtk_portal.bases import claims, copies, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.db import Connection
-from sp_rtk_portal.tunnel import broker
+from sp_rtk_portal.tunnel.end_reason import EndReason
 from sp_rtk_portal.web.client_ip import rate_key
 
 router = APIRouter()
@@ -209,7 +209,7 @@ async def _audit_pause(
 async def _cut_paused(ctx: PortalContext, base_id: str) -> None:
     """Remote access is paused on site: its Remote sessions end and its
     tunnel closes."""
-    await ctx.tunnels.end_sessions(broker.PAUSED, base_id=base_id)
+    await ctx.tunnels.end_sessions(EndReason.PAUSED, base_id=base_id)
     await ctx.tunnels.close_tunnel(base_id)
 
 

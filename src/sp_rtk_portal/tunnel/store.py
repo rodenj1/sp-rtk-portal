@@ -7,6 +7,7 @@ from datetime import datetime
 
 from sp_rtk_portal import audit
 from sp_rtk_portal.db import Connection
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 
 def token_hash(token: str) -> bytes:
@@ -49,7 +50,7 @@ async def ended(
     base_id: str,
     now: datetime,
     last_activity: datetime,
-    reason: str,
+    reason: EndReason,
     ip: str | None,
 ) -> None:
     await conn.execute(
@@ -71,10 +72,10 @@ async def ended(
 async def end_leftovers(conn: Connection, now: datetime) -> int:
     """End the Remote sessions a previous Portal process left open."""
     cur = await conn.execute(
-        "UPDATE remote_session SET ended_at = %s, end_reason = 'portal_restart'"
+        "UPDATE remote_session SET ended_at = %s, end_reason = %s"
         " WHERE ended_at IS NULL"
         " RETURNING id, account_id, base_id, host(ip) AS ip",
-        (now,),
+        (now, EndReason.PORTAL_RESTART),
     )
     rows = await cur.fetchall()
     for row in rows:
@@ -85,6 +86,6 @@ async def end_leftovers(conn: Connection, now: datetime) -> int:
             account_id=row["account_id"],
             base_id=row["base_id"],
             ip=row["ip"],
-            detail={"remote_session": row["id"], "reason": "portal_restart"},
+            detail={"remote_session": row["id"], "reason": EndReason.PORTAL_RESTART},
         )
     return len(rows)

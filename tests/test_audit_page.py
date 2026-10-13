@@ -13,6 +13,9 @@ from contextlib import AsyncExitStack
 
 import pytest
 
+from sp_rtk_portal.audit import log
+from sp_rtk_portal.tunnel.end_reason import EndReason
+
 from .harness.agent import BASE_IP, RunningAgent, running_agent
 from .harness.clock import FakeClock
 from .harness.fake_authentik import FakeAuthentik
@@ -284,3 +287,9 @@ async def test_pausing_remote_access_on_the_base_shows_as_done_by_the_base(
         ("Remote access resumed on the base", "The base", BASE_NAME, BASE_IP),
         ("Remote access paused on the base", "The base", BASE_NAME, BASE_IP),
     ]
+
+
+def test_every_remote_session_end_reason_is_worded():
+    """Each reason the Portal ends a Remote session with has its own words
+    in the audit log (an unknown one would show its stored value)."""
+    assert set(log.END_REASONS) == set(EndReason)

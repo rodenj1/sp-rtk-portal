@@ -18,6 +18,7 @@ from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 
 from sp_rtk_portal.accounts.sessions import COOKIE
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
@@ -221,7 +222,7 @@ async def test_a_revoked_token_stops_working_at_once(
     assert await asyncio.wait_for(ws.recv(), 5) == "echo before"
     base_id = frame.split("/")[2]
     # e.g. an un-Share, Un-claim or log out everywhere
-    await portal.context.tunnels.end_sessions("un_claim", base_id=base_id)
+    await portal.context.tunnels.end_sessions(EndReason.UN_CLAIM, base_id=base_id)
 
     with pytest.raises(ConnectionClosed):
         await asyncio.wait_for(ws.recv(), 5)
