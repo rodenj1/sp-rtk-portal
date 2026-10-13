@@ -372,11 +372,14 @@ async def test_two_remote_sessions_share_one_tunnel_which_closes_2_min_after_the
     await wait_tunnel(agent, "closed")
     assert not tunnels.tunnel_up(base_id)
 
-    # It reopens on the next Wake.
+    # It reopens on the next Wake. (Earlier opens may include the agent's
+    # own idle backstop: no frame here keeps a stream open, so it closed the
+    # tunnel and the Portal re-Woke the base.)
+    opened = len(agent.tunnel_urls)
     await open_remotely(operator, base_id)
     await agent.run(seconds=20)
     await wait_tunnel(agent, "open")
-    assert agent.tunnel_urls == [TUNNEL_URL, TUNNEL_URL]
+    assert agent.tunnel_urls == [TUNNEL_URL] * (opened + 1)
 
 
 async def test_a_users_tabs_share_one_remote_session(
