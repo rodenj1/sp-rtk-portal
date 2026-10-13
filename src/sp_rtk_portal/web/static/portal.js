@@ -50,5 +50,7 @@ document.addEventListener("submit", (event) => {
   const form = event.target;
   if (!(form instanceof HTMLFormElement) || !form.dataset.action) return;
   event.preventDefault();
+  // data-confirm: ask first (e.g. Un-claim), and do nothing on Cancel.
+  if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) return;
   submitAction(form);
 });

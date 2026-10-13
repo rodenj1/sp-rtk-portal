@@ -24,6 +24,7 @@ from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.bases import online, store
 from sp_rtk_portal.context import PortalContext, portal_context
+from sp_rtk_portal.proxy.middleware import frame_path
 from sp_rtk_portal.tunnel.broker import RemoteSession, TunnelBroker
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.templates import render
@@ -86,14 +87,21 @@ async def session_bar(
 
 
 def _status(broker: TunnelBroker, session: RemoteSession) -> dict[str, object]:
-    return {"state": broker.state(session), "reason": session.end_reason}
+    status: dict[str, object] = {
+        "state": broker.state(session),
+        "reason": session.end_reason,
+    }
+    if not session.ended:
+        status["frame"] = frame_path(session)
+    return status
 
 
 @router.websocket("/bases/{base_id}/session")
 async def session_channel(base_id: str, websocket: WebSocket) -> None:
     """The Session bar's status channel. While one is open, its user is
     present on the Remote session; each change is sent as
-    ``{"state": "waking" | "connected" | "ended", "reason": ...}``."""
+    ``{"state": "waking" | "connected" | "ended", "reason": ..., "frame":
+    "/b/<id>/s/<token>/"}`` (``frame`` until the session ends)."""
     ctx: PortalContext = websocket.app.state.portal
     account = await websocket_account(websocket, ctx)
     session = None
