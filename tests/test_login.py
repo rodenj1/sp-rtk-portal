@@ -51,6 +51,22 @@ async def test_unknown_email_shows_the_same_error(browser: Browser):
     assert resp.json() == {"error": "Wrong email or password."}
 
 
+async def test_an_account_outside_portal_users_cant_sign_in(
+    portal, authentik: FakeAuthentik
+):
+    # E.g. a homelab admin: right password, TOTP on, but not a Portal account.
+    authentik.add_user(EMAIL, PASSWORD, totp="246810", groups=["admins"])
+
+    async with portal.browser() as browser:
+        resp = await browser.sign_in(EMAIL, PASSWORD)
+
+        # The same answer as a wrong password, and no TOTP step.
+        assert resp.status_code == 401
+        assert resp.json() == {"error": "Wrong email or password."}
+        assert (await browser.get("/")).headers["location"] == "/login"
+    assert await portal.query("SELECT id FROM account") == []
+
+
 async def test_account_with_totp_signs_in_after_the_code(
     browser: Browser, authentik: FakeAuthentik
 ):
