@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block account %}{% include "_nav.html" %}{% endblock %}
+{% block main %}
+<h1>Delete your account</h1>
+<p>Deleting <strong>{{ account.email }}</strong> can't be undone.</p>
+{% if bases %}
+<p>These bases you Claimed will be Un-claimed. Each forgets the Portal and has to be Claimed
+again from its own web UI before anyone can reach it remotely, and every Share on them goes:</p>
+<ul>
+  {% for b in bases %}
+  <li data-field="unclaim-base">{{ b.name }}</li>
+  {% endfor %}
+</ul>
+{% else %}
+<p>You haven't Claimed any bases, so none will be Un-claimed.</p>
+{% endif %}
+<p>Bases Shared with you leave your list, you're signed out everywhere, and you can no longer
+sign in with this email and password.</p>
+<form data-action="/account/delete" data-confirm="Delete your account for good?">
+  <button type="submit" data-field="delete-confirm">Delete my account</button>
+  <a href="/account">Cancel</a>
+</form>
+<p class="error" data-error role="alert" hidden></p>
+{% endblock %}

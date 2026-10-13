@@ -21,9 +21,15 @@ _SELECT = "SELECT id, owner_account_id, name, key_thumbprint FROM base"
 
 
 async def by_operator(
-    ctx: PortalContext, *, base_id: str, account_id: int, ip: str | None
+    ctx: PortalContext,
+    *,
+    base_id: str,
+    account_id: int,
+    ip: str | None,
+    by: Literal["portal", "account_deleted"] = "portal",
 ) -> bool:
-    """The Operator Un-claims their base on the Portal. ``False``: no such
+    """The Operator Un-claims their base on the Portal (``by="portal"``), or
+    deletes their account (``by="account_deleted"``). ``False``: no such
     base of theirs (a Shared user's attempt included)."""
     async with ctx.db.connection() as conn:
         cur = await conn.execute(
@@ -33,7 +39,7 @@ async def by_operator(
         row = await cur.fetchone()
         if row is None:
             return False
-        await _forgotten(ctx, conn, row, by="portal", ip=ip)
+        await _forgotten(ctx, conn, row, by=by, ip=ip)
     await ctx.tunnels.forget_base(base_id)
     return True
 
@@ -58,7 +64,7 @@ async def _forgotten(
     conn: Connection,
     row: dict[str, Any],
     *,
-    by: Literal["base", "portal"],
+    by: Literal["base", "portal", "account_deleted"],
     ip: str | None,
 ) -> None:
     """Hooks first (while the base row still exists, so rows referencing it

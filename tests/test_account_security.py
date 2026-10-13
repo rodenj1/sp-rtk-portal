@@ -300,3 +300,113 @@ async def test_an_email_changed_in_authentik_shows_at_next_login_and_keeps_bases
         shares = (await b.get(f"/bases/{base_id}/shares")).text
         assert "sam@new.example" in shares
     assert len(await portal.query("SELECT id FROM account")) == 2
+
+
+# --- Account deletion ---------------------------------------------------------------
+
+
+async def test_account_deletion_previews_the_bases_it_will_un_claim(
+    operator: Browser, agent: RunningAgent
+):
+    assert 'href="/account/delete"' in (await operator.get("/account")).text
+
+    page = (await operator.get("/account/delete")).text
+
+    assert "North field" in page
+    assert 'data-action="/account/delete"' in page
+
+
+async def test_deleting_the_account_un_claims_removes_shares_ends_sessions_and_deactivates(
+    portal: Portal, authentik: FakeAuthentik, operator: Browser, agent: RunningAgent
+):
+    base_id = await base_of(agent)
+    thumbprint = agent.key.thumbprint
+    me = await account_id(portal)
+    await signed_in_user(portal, COLLEAGUE)
+    resp = await operator.action(f"/bases/{base_id}/shares", {"email": COLLEAGUE})
+    assert resp.status_code == 200, resp.text
+    # Sam's own base, Shared with me, which I have open remotely.
+    async with (
+        portal.browser(ip="198.51.100.9") as sam,
+        running_agent(portal, ip="198.51.100.10") as sams_agent,
+    ):
+        assert (await sam.sign_in(COLLEAGUE, PASSWORD)).json() == {"next": "/"}
+        await sams_agent.claim(sam, "South field")
+        sams_base = await base_of(sams_agent)
+        resp = await sam.action(f"/bases/{sams_base}/shares", {"email": EMAIL})
+        assert resp.status_code == 200, resp.text
+        remote = await remote_session_token(portal, operator, sams_base)
+        cookie = operator.cookies[COOKIE]
+
+        resp = await operator.action("/account/delete")
+
+        assert resp.json() == {"next": "/login"}
+        # My base is Un-claimed: its agent gets 401 unclaimed and goes idle.
+        status = await agent.until("not_connected")
+        assert status.message and "Un-claimed on the Portal" in status.message
+        assert [r["id"] for r in await portal.query("SELECT id FROM base")] == [
+            sams_base
+        ]
+        # Every Share involving me is gone, and so is my access to Sam's base.
+        assert await portal.query("SELECT base_id FROM share") == []
+        assert not base_card((await sam.get("/")).text, base_id)
+        await assert_token_refused(operator, sams_base, remote)
+        assert (await sams_agent.status()).state == "connected"
+    await assert_signed_out(operator, cookie)
+    assert authentik.users[EMAIL].is_active is False
+    assert ("PATCH", f"/api/v3/core/users/{authentik.users[EMAIL].pk}/") in (
+        authentik.api_calls
+    )
+    async with portal.browser() as again:
+        assert (await again.sign_in(EMAIL, PASSWORD)).status_code == 401
+
+    entries = await portal.query(
+        "SELECT kind, account_id, base_id, detail FROM audit_entry"
+        " WHERE kind IN ('unclaim', 'share_left', 'account_deleted') ORDER BY id"
+    )
+    assert entries == [
+        {
+            "kind": "unclaim",
+            "account_id": me,
+            "base_id": base_id,
+            "detail": {
+                "by": "account_deleted",
+                "name": "North field",
+                "key_thumbprint": thumbprint,
+            },
+        },
+        {
+            "kind": "share_left",
+            "account_id": me,
+            "base_id": sams_base,
+            "detail": {
+                "shared_user": me,
+                "email": EMAIL,
+                "reason": "account_deleted",
+            },
+        },
+        {
+            "kind": "account_deleted",
+            "account_id": me,
+            "base_id": None,
+            "detail": {"email": EMAIL, "unclaimed": [base_id]},
+        },
+    ]
+    ends = await portal.query(
+        "SELECT detail FROM audit_entry WHERE kind = 'remote_session_end'"
+    )
+    assert [e["detail"]["reason"] for e in ends] == ["account_deleted"]
+
+
+async def test_account_deletion_changes_nothing_if_authentik_refuses(
+    portal: Portal, authentik: FakeAuthentik, operator: Browser, agent: RunningAgent
+):
+    authentik.api_token = "revoked"
+
+    resp = await operator.action("/account/delete")
+
+    assert resp.status_code == 502
+    assert "error" in resp.json()
+    assert len(await portal.query("SELECT id FROM base")) == 1
+    assert (await operator.get("/")).status_code == 200
+    assert authentik.users[EMAIL].is_active is True

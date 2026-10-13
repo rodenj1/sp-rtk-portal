@@ -23,6 +23,7 @@ from sp_rtk_portal.db import Connection
 
 BY_BASE = "base"
 BY_PORTAL = "portal"
+BY_ACCOUNT_DELETION = "account_deleted"
 
 
 @dataclass(frozen=True)
@@ -30,8 +31,9 @@ class Unclaimed:
     base_id: str
     owner_account_id: int
     at: datetime
-    by: Literal["base", "portal"]
-    """Where the Un-claim came from: the base's local UI, or the Portal."""
+    by: Literal["base", "portal", "account_deleted"]
+    """Where the Un-claim came from: the base's local UI, the Portal, or
+    the Operator deleting their account."""
 
 
 UnclaimedHook = Callable[[Connection, Unclaimed], Awaitable[None]]

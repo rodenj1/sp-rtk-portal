@@ -1,13 +1,15 @@
-"""Account security pages and actions: log out everywhere, and the review
-of recent Shares after a password change or recovery."""
+"""Account security pages and actions: log out everywhere, the review of
+recent Shares after a password change or recovery, and account deletion."""
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
-from sp_rtk_portal.accounts import review, security, sessions
+from sp_rtk_portal.accounts import deletion, review, security, sessions
+from sp_rtk_portal.accounts.authentik import AuthentikFailedClosed
 from sp_rtk_portal.accounts.deps import current_account
+from sp_rtk_portal.accounts.routes import failed_closed
 from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.shares import sharing
@@ -101,3 +103,40 @@ async def review_done(
     async with ctx.db.connection() as conn:
         await review.seen(conn, account.id)
     return JSONResponse({"next": "/"})
+
+
+# --- account deletion -----------------------------------------------------------------
+
+DELETE_FAILED = "Your account couldn't be deleted right now. Nothing was changed."
+
+
+@router.get("/account/delete", response_class=HTMLResponse)
+async def delete_page(
+    request: Request,
+    account: Account = Depends(current_account),
+    ctx: PortalContext = Depends(portal_context),
+) -> HTMLResponse:
+    async with ctx.db.connection() as conn:
+        owned = await deletion.preview(conn, account.id)
+    return render(
+        request,
+        "delete_account.html",
+        title="Delete your account",
+        account=account,
+        bases=owned,
+    )
+
+
+@router.post("/account/delete")
+async def delete_account(
+    request: Request,
+    account: Account = Depends(current_account),
+    ctx: PortalContext = Depends(portal_context),
+) -> JSONResponse:
+    try:
+        await deletion.delete_account(ctx, account, client_ip(request))
+    except AuthentikFailedClosed as e:
+        return failed_closed(e, DELETE_FAILED)
+    response = JSONResponse({"next": "/login"})
+    sessions.clear_cookie(response)
+    return response
