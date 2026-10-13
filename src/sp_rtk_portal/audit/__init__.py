@@ -27,6 +27,7 @@ SHARE_REMOVED = "share_removed"
 SHARE_LEFT = "share_left"
 PENDING_SHARE_CREATED = "pending_share_created"
 PENDING_SHARE_REMOVED = "pending_share_removed"
+LOG_OUT_EVERYWHERE = "log_out_everywhere"
 
 
 async def record(

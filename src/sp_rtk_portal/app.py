@@ -11,7 +11,11 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 from sp_rtk_portal_protocol import ReplayCache
 
 from sp_rtk_portal import health
-from sp_rtk_portal.accounts import account_page_routes, signup_routes
+from sp_rtk_portal.accounts import (
+    account_page_routes,
+    security_routes,
+    signup_routes,
+)
 from sp_rtk_portal.accounts import routes as account_routes
 from sp_rtk_portal.accounts.attempts import PendingAttempts
 from sp_rtk_portal.accounts.authentik import Authentik
@@ -101,6 +105,7 @@ def create_app(
     app.include_router(account_routes.router)
     app.include_router(signup_routes.router)
     app.include_router(account_page_routes.router)
+    app.include_router(security_routes.router)
     app.include_router(base_routes.router)
     app.include_router(agent_routes.router)
     app.include_router(settings_routes.router)
