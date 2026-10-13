@@ -321,6 +321,9 @@ async def test_a_proxy_error_is_stamped(
 async def test_the_session_bar_page_may_frame_only_its_own_origin(
     operator: Browser, frame: str
 ):
+    """Its own origin is the base proxy; ``blob:`` is a framed page's own
+    download (``ui.download``), which Firefox checks against this page's
+    ``frame-src``."""
     base_id = frame.split("/")[2]
     resp = await operator.get(f"/bases/{base_id}")
 
@@ -329,7 +332,21 @@ async def test_the_session_bar_page_may_frame_only_its_own_origin(
         for d in resp.headers["content-security-policy"].split(";")
     )
     assert policy["frame-ancestors"] == "'none'"
-    assert policy["frame-src"] == "'self'"
+    assert policy["frame-src"] == "'self' blob:"
     assert (
         "frame-src" not in (await operator.get("/")).headers["content-security-policy"]
     )
+
+
+async def test_the_session_bar_page_keeps_other_sites_windows_away_but_not_its_frame(
+    operator: Browser, frame: str
+):
+    """``same-origin-allow-popups`` still cuts a cross-origin opener off;
+    plain ``same-origin`` would make Firefox and WebKit refuse the framed
+    base's ``window.open(url, "_self")`` (NiceGUI's ``ui.navigate.to``)."""
+    base_id = frame.split("/")[2]
+    resp = await operator.get(f"/bases/{base_id}")
+
+    assert resp.headers["cross-origin-opener-policy"] == "same-origin-allow-popups"
+    other = await operator.get("/")
+    assert other.headers["cross-origin-opener-policy"] == "same-origin"
