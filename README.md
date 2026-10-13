@@ -54,6 +54,10 @@ A Claimed base polls `POST /agent/poll` every 20 s (60 s when its Operator marks
 
 The Session bar page `/bases/<id>` shows Waking (with the poll-interval hint) and then Connected over a status websocket, `/bases/<id>/session`, on the Portal's own origin. While one is open its user is present. A Remote session ends when nobody has been present for the agent config's idle timeout (2 min), or at its hard cap (60 min); its path token is revoked at once and, when it was the base's last, the tunnel is closed. Remote session start and end are audited. All of this is in-process state (one Portal instance); a restart ends every Remote session.
 
+### Remote access paused
+
+An Operator on site can pause remote access from the base's local Portal page. The agent keeps its key and Claim and keeps polling, but each poll says `paused` and it ignores any Wake. On that poll the Portal ends the base's live Remote sessions (reason `paused`, tokens revoked), closes its tunnel and audits the pause; the base list shows "Remote access paused" with Open remotely disabled (and `POST /bases/<id>/remote` answers 409). Only the base can resume. Each poll reply also lists the base's live Remote sessions (who and since when) for its local Portal page.
+
 ## Container image
 
 `Dockerfile` builds the image the homelab runs (non-root uid 1000, read-only root filesystem, listening on `PORTAL_PORT`, default 8000). Pushing a `v*` tag runs `.github/workflows/image.yml`: the tests, then a push to `ghcr.io/rodenj1/sp-rtk-portal` tagged `<version>`, `<major>.<minor>` and `sha-<short>`. The run summary prints the digest, which [homelab-talos](https://github.com/rodenj1/homelab-talos) pins in `clusters/production/apps/sp-rtk-portal/deployment.yaml`.
