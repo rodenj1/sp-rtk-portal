@@ -27,7 +27,7 @@ async def base_list(
     ctx: PortalContext = Depends(portal_context),
 ) -> HTMLResponse:
     async with ctx.db.connection() as conn:
-        bases = await store.owned_by(conn, account.id)
+        bases = await store.listed_for(conn, account.id)
         config = await agent_config.current(conn, ctx.settings)
         notices = await agent_config.notices(conn)
         latest = await agent_config.latest_release(conn)

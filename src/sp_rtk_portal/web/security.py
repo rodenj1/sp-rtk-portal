@@ -10,8 +10,9 @@
   other sites harmless.
 
 Paths under ``EXEMPT_PREFIXES`` are not Portal pages: ``/b/`` is the base proxy,
-which stamps its own headers (ADR 0004), and ``/agent/`` is the agent API,
-authenticated by signed proofs rather than cookies.
+which stamps its own headers (ADR 0004), ``/agent/`` is the agent API,
+authenticated by signed proofs rather than cookies, and ``/doorbell/`` is the
+Doorbell server's interface, authenticated by its bearer token.
 """
 
 from __future__ import annotations
@@ -25,7 +26,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 ACTION_HEADER = "X-Portal-Action"
 
-EXEMPT_PREFIXES = ("/b/", "/agent/")
+EXEMPT_PREFIXES = ("/b/", "/agent/", "/doorbell/")
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 

@@ -21,6 +21,7 @@
   <li data-base="{{ base.id }}" data-state="{{ card.state }}">
     <div class="base-head">
       <span class="name">{{ base.name }}</span>
+      {% if base.role == "shared" %}<span class="role" data-field="shared">Shared</span>{% endif %}
       <span class="state state-{{ card.state }}" data-field="state">{{ card.state_label }}</span>
       {% if base.last_seen_at %}
       <span class="seen">last seen <time data-field="last-seen" datetime="{{ base.last_seen_at.isoformat() }}">{{ base.last_seen_at | utc }} UTC</time></span>
@@ -76,14 +77,21 @@
       {% endif %}
     </div>
     </div>
+    {% if base.role == "operator" %}
     <form class="metered" data-action="/bases/{{ base.id }}/metered">
       <input type="hidden" name="metered" value="{{ 'false' if base.metered else 'true' }}">
       <button type="submit">{% if base.metered %}Unmark metered{% else %}Mark metered (polls less often){% endif %}</button>
     </form>
+    <a href="/bases/{{ base.id }}/shares" data-field="shares">Share</a>
     <form class="unclaim" data-action="/bases/{{ base.id }}/unclaim"
           data-confirm="Un-claim {{ base.name }}? The Portal forgets this base: its Shares and any Remote sessions end, and Claiming it again makes it a new base with a new address.">
       <button type="submit" data-field="unclaim">Un-claim</button>
     </form>
+    {% else %}
+    <form class="leave" data-action="/bases/{{ base.id }}/leave">
+      <button type="submit" data-field="leave">Leave this Share</button>
+    </form>
+    {% endif %}
   </li>
   {% endfor %}
 </ul>

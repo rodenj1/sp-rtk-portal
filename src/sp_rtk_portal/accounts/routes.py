@@ -25,6 +25,7 @@ from sp_rtk_portal.accounts.deps import safe_next
 from sp_rtk_portal.accounts.events import PasswordChanged
 from sp_rtk_portal.accounts.store import upsert_on_login
 from sp_rtk_portal.context import PortalContext, portal_context
+from sp_rtk_portal.shares import sharing
 from sp_rtk_portal.web.client_ip import client_ip
 from sp_rtk_portal.web.templates import render
 
@@ -151,6 +152,7 @@ async def signed_in(
             )
         token = await sessions.start(conn, account.id, now, lifetime)
         await audit.record(conn, at=now, kind=audit.LOGIN, account_id=account.id, ip=ip)
+        await sharing.convert_pending(conn, ctx, account, ip)
     log.info("account %s signed in", account.id)
     response = JSONResponse({"next": next_url})
     sessions.set_cookie(response, token, lifetime)

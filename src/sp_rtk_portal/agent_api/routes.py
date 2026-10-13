@@ -30,7 +30,7 @@ from sp_rtk_portal.agent_api.auth import (
     agent_request,
     reply,
 )
-from sp_rtk_portal.bases import claims, presence, unclaim
+from sp_rtk_portal.bases import claims, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 
 router = APIRouter()
@@ -134,13 +134,16 @@ async def check_in(
     req: AgentRequest = Depends(agent_request),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
-    """The slow status report: versions, Doorbell health, LAN addresses."""
+    """The slow status report: versions, Doorbell health, LAN addresses. The
+    reply says whether the Portal hears the base's Doorbell, and gives it its
+    ring key while the agent config names a Doorbell host."""
     msg = req.message(CheckIn)
+    now = ctx.clock.now()
     async with ctx.db.connection() as conn:
         seen = await presence.checked_in(
             conn,
             thumbprint=req.proof.thumbprint,
-            now=ctx.clock.now(),
+            now=now,
             protocol_version=req.protocol_version,
             ip=req.ip,
             check_in=msg,
@@ -149,7 +152,24 @@ async def check_in(
             raise _unclaimed()
         config = await agent_config.current(conn, ctx.settings)
         notices = await agent_config.wire_notices(conn)
-    return reply(CheckInReply(config=config, metered=seen.metered, notices=notices))
+        ring_key = (
+            await presence.ring_key(conn, seen.base_id)
+            if config.doorbell_host
+            else None
+        )
+    heard = (
+        seen.last_doorbell_at is not None
+        and now - seen.last_doorbell_at <= online.DOORBELL_OFFLINE_AFTER
+    )
+    return reply(
+        CheckInReply(
+            config=config,
+            metered=seen.metered,
+            notices=notices,
+            doorbell_heard=heard and ring_key is not None,
+            ring_key=ring_key,
+        )
+    )
 
 
 @router.post(RELEASE_PATH)

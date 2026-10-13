@@ -7,6 +7,8 @@
   sends a state-changing request the way the Portal's pages do;
   ``browser.sign_in`` runs the login steps; ``browser.http`` is the raw client.
 - ``authentik``: the fake Authentik (``add_user``, ``script_challenge``, ...).
+- ``smtp``: the fake SMTP server the Portal sends email through
+  (``smtp.outbox``, ``smtp.to(address)``).
 - ``clock``: the fake clock the Portal reads (``clock.advance(days=30)``).
 - ``database_url``: a fresh database cloned from the migrated template.
 """
@@ -19,6 +21,7 @@ import pytest
 
 from .harness.clock import FakeClock
 from .harness.fake_authentik import FakeAuthentik
+from .harness.fake_smtp import FakeSmtp, fake_smtp
 from .harness.portal import Browser, Portal, running_portal
 from .harness.postgres import create_template, fresh_database, postgres_server
 
@@ -47,10 +50,16 @@ def authentik(clock: FakeClock) -> FakeAuthentik:
 
 
 @pytest.fixture
+def smtp() -> Iterator[FakeSmtp]:
+    with fake_smtp() as server:
+        yield server
+
+
+@pytest.fixture
 async def portal(
-    database_url: str, clock: FakeClock, authentik: FakeAuthentik
+    database_url: str, clock: FakeClock, authentik: FakeAuthentik, smtp: FakeSmtp
 ) -> AsyncIterator[Portal]:
-    async with running_portal(database_url, clock, authentik) as p:
+    async with running_portal(database_url, clock, authentik, smtp=smtp) as p:
         yield p
 
 

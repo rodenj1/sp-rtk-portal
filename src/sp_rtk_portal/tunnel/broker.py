@@ -6,7 +6,8 @@ All of it is process-local state (the Portal is a single instance, ADR
 - **Wake.** :meth:`TunnelBroker.wake` makes a one-time nonce for a base
   (:attr:`Settings.wake_lifetime`); the base's polls carry it
   (:meth:`TunnelBroker.wake_for_poll`) until a tunnel open redeems it
-  (:meth:`TunnelBroker.redeem`).
+  (:meth:`TunnelBroker.redeem`). Whatever registered with
+  :meth:`TunnelBroker.on_wake` (the Doorbell) hears of each Wake too.
 - **Tunnel.** One per base, shared by all its Remote sessions
   (:meth:`TunnelBroker.serve_tunnel` runs it; :meth:`TunnelBroker.open_stream`
   opens a stream to the base's UI).
@@ -38,7 +39,7 @@ import contextlib
 import hmac
 import logging
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
@@ -142,6 +143,7 @@ class TunnelBroker:
         self._attempts: dict[str, _Attempt] = {}
         self._stopping = False
         self._sweeper: asyncio.Task[None] | None = None
+        self._wake_hooks: list[Callable[[str], None]] = []
 
     # --- lifecycle ---------------------------------------------------------
 
@@ -163,9 +165,13 @@ class TunnelBroker:
 
     # --- Wakes ---------------------------------------------------------------
 
+    def on_wake(self, hook: Callable[[str], None]) -> None:
+        """Call ``hook(base_id)`` on every Wake (the Doorbell rings it)."""
+        self._wake_hooks.append(hook)
+
     def wake(self, base_id: str) -> str:
-        """Wake the base: its next poll carries this nonce. Reuses an
-        unexpired one."""
+        """Wake the base: its next poll carries this nonce (or a Doorbell
+        ring does). Reuses an unexpired one."""
         now = self._clock.now()
         pending = self._wakes.get(base_id)
         if pending is None or pending.expires_at <= now:
@@ -173,6 +179,8 @@ class TunnelBroker:
                 secrets.token_urlsafe(24), now + self._settings.wake_lifetime
             )
             self._wakes[base_id] = pending
+        for hook in self._wake_hooks:
+            hook(base_id)
         return pending.nonce
 
     def wake_for_poll(self, base_id: str) -> str | None:
