@@ -42,6 +42,7 @@ jobs:
           version: "0.11.14"
       - run: uv sync --frozen
       - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run playwright install --with-deps chromium firefox
       # Postgres from pgserver, the path the suite is proven on (the
       # testcontainers path is untested).
       - run: uv run pytest
