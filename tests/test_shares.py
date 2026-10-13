@@ -19,7 +19,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
 from .harness.fake_authentik import FakeAuthentik
-from .harness.fake_smtp import FakeSmtp
+from .harness.fake_smtp import FakeSmtp, Mail
 from .harness.pages import base_card, fields
 from .harness.portal import Browser, Portal
 from .harness.server import serving
@@ -93,6 +93,13 @@ async def share(operator: Browser, base_id: str, email: str) -> dict:
     return resp.json() | {"status": resp.status_code}
 
 
+def assert_share_wording(*emails: Mail) -> None:
+    """The glossary's words: a Share or a Pending share, never an
+    invitation."""
+    for mail in emails:
+        assert "invit" not in f"{mail.subject}\n{mail.body}".lower(), mail.body
+
+
 # --- Sharing --------------------------------------------------------------------
 
 
@@ -106,12 +113,13 @@ async def test_sharing_with_an_existing_verified_account_grants_it_at_once(
     assert reply == {"next": f"/bases/{base_id}/shares", "status": 200}
     card = base_card((await colleague.get("/")).text, base_id)
     assert card["shared"] == ["Shared"]
-    [invite] = smtp.to(COLLEAGUE)
-    assert BASE_NAME in invite.subject
-    assert OPERATOR in invite.body
-    assert f"{portal.origin}/" in invite.body
+    [email] = smtp.to(COLLEAGUE)
+    assert BASE_NAME in email.subject
+    assert OPERATOR in email.body
+    assert f"{portal.origin}/" in email.body
     [notice] = smtp.to(OPERATOR)
     assert BASE_NAME in notice.body and COLLEAGUE in notice.body
+    assert_share_wording(email, notice)
 
 
 async def test_sharing_with_an_unknown_email_creates_a_pending_share(
@@ -123,12 +131,14 @@ async def test_sharing_with_an_unknown_email_creates_a_pending_share(
     page = fields((await operator.get(f"/bases/{base_id}/shares")).text)
     assert page["pending-share"] == ["new.person@example.com"]
     assert "shared-user" not in page
-    [invite] = smtp.to("new.person@example.com")
-    assert BASE_NAME in invite.subject
-    assert f"{portal.origin}/signup" in invite.body
-    assert "2026-01-15" in invite.body  # expires in 14 days
+    [email] = smtp.to("new.person@example.com")
+    assert BASE_NAME in email.subject
+    assert f"{portal.origin}/signup" in email.body
+    assert "2026-01-15" in email.body  # expires in 14 days
     [notice] = smtp.to(OPERATOR)
     assert BASE_NAME in notice.body and "new.person@example.com" in notice.body
+    assert "Pending share" in email.body and "Pending share" in notice.body
+    assert_share_wording(email, notice)
 
 
 async def test_an_unverified_account_only_gets_a_pending_share(

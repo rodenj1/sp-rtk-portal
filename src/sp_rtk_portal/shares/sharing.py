@@ -305,26 +305,24 @@ async def _email(
 ) -> None:
     origin = ctx.settings.public_origin
     name = _one_line(base.name)
+    body = (
+        f"{by} has Shared the base station “{name}” with you on the"
+        " sp-rtk-base Portal, so you can operate it remotely.\n\n"
+    )
     if done.pending:
         assert done.expires_at is not None
         expires = done.expires_at.strftime("%Y-%m-%d %H:%M UTC")
-        invite = (
-            f"{by} has Shared the base station “{name}” with you on the"
-            " sp-rtk-base Portal, so you can operate it remotely.\n\n"
+        body += (
             f"To accept, create a Portal account with this email address"
             f" ({done.email}):\n{origin}/signup\n\n"
             f"Already have an account with this address? Sign in:\n{origin}/login\n\n"
-            f"The invitation expires on {expires}.\n"
+            f"This Pending share expires on {expires}.\n"
         )
-        kind = "A Pending share (invitation)"
+        kind = "A Pending share"
     else:
-        invite = (
-            f"{by} has Shared the base station “{name}” with you on the"
-            " sp-rtk-base Portal, so you can operate it remotely.\n\n"
-            f"It's in your list of bases:\n{origin}/\n"
-        )
+        body += f"It's in your list of bases:\n{origin}/\n"
         kind = "A Share"
-    await ctx.mailer.send(done.email, f"{by} Shared the base “{name}” with you", invite)
+    await ctx.mailer.send(done.email, f"{by} Shared the base “{name}” with you", body)
     notice = (
         f"{kind} of your base “{name}” was created for {done.email}"
         f" by {by} at {now.strftime('%Y-%m-%d %H:%M UTC')}.\n\n"
