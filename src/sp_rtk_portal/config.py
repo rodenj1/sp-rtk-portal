@@ -44,6 +44,9 @@ class Settings:
     # The Doorbell server's bearer token for /doorbell/* (ticket #100). Empty
     # (the default, v1 has no Doorbell server): that interface answers 404.
     doorbell_token: str = ""
+    # Local access (ticket #97): the port of a base's own UI on its LAN.
+    # Always 8080 in production; browser tests point it at a test server.
+    base_ui_port: int = 8080
 
     @property
     def oidc_issuer(self) -> str:

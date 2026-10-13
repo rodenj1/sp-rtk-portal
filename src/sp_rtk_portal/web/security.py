@@ -20,6 +20,7 @@ from __future__ import annotations
 import re
 
 from starlette.datastructures import Headers, MutableHeaders
+from starlette.requests import HTTPConnection
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -81,6 +82,26 @@ def page_headers(path: str) -> dict[str, str]:
     return PAGE_HEADERS
 
 
+_CONNECT_STATE = "csp_connect_src"
+
+
+def allow_connect(request: HTTPConnection, sources: list[str]) -> None:
+    """Let this one page also ``fetch`` from ``sources`` (exact URLs). The base
+    list uses it for its bases' identity endpoints (Local access, #97)."""
+    setattr(request.state, _CONNECT_STATE, list(sources))
+
+
+def _with_connect(policy: str, sources: list[str]) -> str:
+    if not sources:
+        return policy
+    directives = []
+    for directive in policy.split("; "):
+        if directive.startswith("connect-src "):
+            directive = " ".join([directive, *sources])
+        directives.append(directive)
+    return "; ".join(directives)
+
+
 def refusal(origin: str, headers: Headers, method: str) -> str | None:
     """Why a request must be refused, or None if it may proceed."""
     if method in SAFE_METHODS:
@@ -112,6 +133,10 @@ class PortalSecurityMiddleware:
                 headers = MutableHeaders(scope=message)
                 for name, value in stamped.items():
                     headers[name] = value
+                extra = scope.get("state", {}).get(_CONNECT_STATE)
+                if extra:
+                    csp = headers["Content-Security-Policy"]
+                    headers["Content-Security-Policy"] = _with_connect(csp, extra)
             await send(message)
 
         reason = refusal(self.origin, Headers(scope=scope), scope["method"])

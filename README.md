@@ -78,6 +78,10 @@ The packets (`protocol/src/sp_rtk_portal_protocol/doorbell.py`): a keepalive is 
 
 `tests/test_doorbell.py` runs the real agent against a stub Doorbell server (`tests/harness/doorbell_server.py`) that does exactly the above over real UDP.
 
+## Local access
+
+On the base's own LAN the user can skip the Portal: each base in the list has "Open locally", a plain link to `http://<primary LAN IP>:8080/` from its last Check-in (only a non-global IP literal is ever linked). It comes before "Open remotely" when the browser's public IP is the base's, after it otherwise. In Chrome and Edge, `static/local.js` also asks each base's identity endpoint (`/api/portal/identity`, which answers only the Portal's origin) over Local Network Access: quietly when the `local-network` permission is already granted, otherwise only after "Detect bases on this network" is clicked, so the Portal never prompts on its own. A base answering with its own `<id>` is "On this network": Open locally becomes the way in, with "Open remotely instead". Firefox, Safari and iOS never check. Local access is never a Remote session. The code is in `src/sp_rtk_portal/bases/local.py`.
+
 ## Un-claim
 
 An Operator Un-claims a base on the Portal (`POST /bases/<id>/unclaim`, the list's Un-claim button; anyone else gets 404), or the base does it from its local Portal page with a signed `POST /agent/release`. Either way the Portal deletes the base record and its key, runs the `ctx.base_events.on_unclaimed` hooks (Shares remove themselves there), writes an `unclaim` audit entry, then ends the base's Remote sessions (reason `un_claim`, revoking their `/b/` tokens) and closes its tunnel. An agent Un-claimed on the Portal learns it from the 401 `unclaimed` on its next request and wipes its key. Claiming again makes a new key and `<id>`.
