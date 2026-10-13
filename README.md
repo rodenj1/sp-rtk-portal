@@ -127,7 +127,7 @@ Email is Authentik's: accounts are keyed on `(iss, sub)` and email is re-read at
 
 ## Container image
 
-`Dockerfile` builds the image the homelab runs (non-root uid 1000, read-only root filesystem, listening on `PORTAL_PORT`, default 8000). Pushing a `v*` tag runs `.github/workflows/image.yml`: the tests, then a push to `ghcr.io/rodenj1/sp-rtk-portal` tagged `<version>`, `<major>.<minor>` and `sha-<short>`. The run summary prints the digest, which [homelab-talos](https://github.com/rodenj1/homelab-talos) pins in `clusters/production/apps/sp-rtk-portal/deployment.yaml`.
+`Dockerfile` builds the image the homelab runs (non-root uid 1000, read-only root filesystem, listening on `PORTAL_PORT`, default 8000). Pushing a `v*` tag runs `.github/workflows/image.yml`: CI's lint and tests (it calls `ci.yml`), then a push to `ghcr.io/rodenj1/sp-rtk-portal` tagged `<version>`, `<major>.<minor>` and `sha-<short>`. The run summary prints the digest, which [homelab-talos](https://github.com/rodenj1/homelab-talos) pins in `clusters/production/apps/sp-rtk-portal/deployment.yaml`.
 
 ```sh
 git tag v0.1.0 && git push origin v0.1.0
@@ -142,9 +142,19 @@ uv run pytest tests/test_login.py -k totp
 uv run ruff check . && uv run ruff format --check .
 ```
 
-The suite runs the real app in-process against a throwaway Postgres, a fake Authentik and a faked clock, with the real Portal agent alongside it (`tests/harness/agent.py`). The agent is sp-rtk-base's own code, a dev dependency on the sibling checkout `../sp-rtk-base` (the submodule next to this one in the rtk_development meta repo); a checkout elsewhere needs sp-rtk-base cloned beside it. The image's test job checks it out the same way (sp-rtk-base `main`, or a ref given to a manual run). The Docker image never installs it. Websocket tests serve the same app over TCP with uvicorn (`tests/harness/server.py`), and a stub (`tests/harness/base_ui.py`) plays the base's UI. Email goes over real SMTP to an in-process aiosmtpd server (`tests/harness/fake_smtp.py`, fixture `smtp`). The Session bar's browser tests drive Chromium and Firefox with Playwright; install them once with `uv run playwright install chromium firefox webkit`.
+The suite runs the real app in-process against a throwaway Postgres, a fake Authentik and a faked clock, with the real Portal agent alongside it (`tests/harness/agent.py`). The agent is sp-rtk-base's own code, a dev dependency on the sibling checkout `../sp-rtk-base` (the submodule next to this one in the rtk_development meta repo); a checkout elsewhere needs sp-rtk-base cloned beside it. CI checks it out the same way (see below). The Docker image never installs it. Websocket tests serve the same app over TCP with uvicorn (`tests/harness/server.py`), and a stub (`tests/harness/base_ui.py`) plays the base's UI. Email goes over real SMTP to an in-process aiosmtpd server (`tests/harness/fake_smtp.py`, fixture `smtp`). The Session bar's browser tests drive Chromium and Firefox with Playwright; install them once with `uv run playwright install chromium firefox webkit`.
 
 The browser suite `tests/test_frame_browser.py` runs the real sp-rtk-base server (`tests/harness/real_base.py`) in the Session bar's frame through the real Portal, in Chromium, Firefox and WebKit. It checks that every base page renders as it does directly, stays live, and that its links, `ui.navigate.to` and `ui.download` work. It also checks that nothing in the frame can reach the Portal page or act as the user, and that the iframe's sandbox attribute and the proxy's CSP sandbox header each hold on their own. The Portal is served over HTTPS there with a throwaway certificate, because WebKit keeps the `__Host-` cookie only over HTTPS, even on localhost. WebKit needs system libraries (`uv run playwright install-deps webkit`). Where it can't launch, its tests are skipped with the reason, unless `PORTAL_TEST_REQUIRE_WEBKIT=1` is set (CI sets it). `PORTAL_TEST_WEBKIT=<path>` runs a different WebKit executable, for example a wrapper that supplies its libraries without installing them system-wide (then also set `PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1`). Postgres comes from, in order: `PORTAL_TEST_DATABASE_URL` (a superuser URL you provide), Docker via testcontainers if Docker is available, or `pgserver` (Postgres binaries installed from PyPI as a dev dependency). Nothing else needs installing beyond `uv sync`.
+
+### CI
+
+`.github/workflows/ci.yml` runs on every push to `main`, every pull request and by hand, and cancels a superseded run on the same branch or PR:
+
+- **lint**: ruff check and ruff format --check over the repo (the ruff `uv.lock` pins), and pyright on `protocol/` on Python 3.10.
+- **protocol**: the protocol package's tests alone on Python 3.10 and 3.13, installed as a consumer installs it.
+- **test**: `uv run pytest` (the whole suite, protocol tests included) on Python 3.12, with Postgres from Docker via testcontainers and Chromium, Firefox and WebKit (`PORTAL_TEST_REQUIRE_WEBKIT=1`).
+
+The sibling sp-rtk-base is the branch with the same name as the PR's head branch or the pushed branch if rodenj1/sp-rtk-base has one, and `main` otherwise, so a change spanning both repos is tested against its own agent code: push the sp-rtk-base branch first. The run prints which ref it used. A manual run (CI or image) can name the ref instead (`sp_rtk_base_ref`).
 
 ## Launch checklist
 
