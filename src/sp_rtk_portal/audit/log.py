@@ -125,6 +125,7 @@ END_REASONS: dict[str, str] = {
     EndReason.UN_SHARE: "Share removed",
     EndReason.SHARE_LEFT: "left the Share",
     EndReason.UN_CLAIM: "base Un-claimed",
+    EndReason.LOGGED_OUT: "logged out",
     EndReason.LOG_OUT_EVERYWHERE: "logged out everywhere",
     EndReason.ACCOUNT_DELETED: "account deleted",
     EndReason.PAUSED: "remote access paused on the base",

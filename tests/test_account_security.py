@@ -16,6 +16,8 @@ from .harness.agent import RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
 from .harness.pages import base_card, entries, fields
 from .harness.portal import Browser, Portal
+from .harness.server import serving
+from .harness.session_bar import status_channel
 
 EMAIL = "operator@example.com"
 PASSWORD = "correct horse battery staple"
@@ -117,6 +119,50 @@ async def test_log_out_everywhere_ends_every_portal_and_remote_session(
         "SELECT detail FROM audit_entry WHERE kind = 'remote_session_end'"
     )
     assert [e["detail"]["reason"] for e in ends] == ["log_out_everywhere"]
+
+
+async def test_logging_out_ends_the_accounts_remote_sessions_and_closes_their_bars(
+    portal: Portal, operator: Browser, laptop: Browser, agent: RunningAgent
+):
+    # A Remote session is per account, shared by all its browsers: logging
+    # out on one ends it for the other too, though that one stays signed in.
+    base_id = await base_of(agent)
+    remote = await remote_session_token(portal, laptop, base_id)
+    laptop_cookie = laptop.cookies[COOKIE]
+    async with (
+        serving(portal.app) as port,
+        status_channel(port, laptop, base_id) as bar,
+    ):
+        await bar.until("waking")
+
+        resp = await operator.action("/logout")
+
+        assert resp.json() == {"next": "/login"}
+        ended = await bar.until("ended")
+        await bar._reader  # the Portal closed the channel
+    assert ended["reason"] == "logged_out"
+    await assert_token_refused(laptop, base_id, remote)
+    laptop.cookies.set(COOKIE, laptop_cookie, domain=HOST)
+    assert (await laptop.get("/")).status_code == 200
+    ends = await portal.query(
+        "SELECT account_id, host(ip) AS ip, detail FROM audit_entry"
+        " WHERE kind = 'remote_session_end'"
+    )
+    assert ends == [
+        {
+            "account_id": await account_id(portal),
+            "ip": "203.0.113.7",
+            "detail": {
+                "remote_session": ends[0]["detail"]["remote_session"],
+                "reason": "logged_out",
+            },
+        }
+    ]
+
+
+async def test_logging_out_without_a_session_is_fine(portal: Portal):
+    async with portal.browser() as browser:
+        assert (await browser.action("/logout")).json() == {"next": "/login"}
 
 
 async def request_recovery_link(browser: Browser, authentik: FakeAuthentik) -> str:

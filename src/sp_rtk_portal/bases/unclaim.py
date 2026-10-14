@@ -1,11 +1,12 @@
 """Un-claim: the Portal forgets a base.
 
-``BaseEvents.unclaimed`` hooks run (Shares, #94), then its record and key
-go (an approved pairing and its Remote session rows with it, by cascade)
-and an audit entry is written, all in one transaction. Then its live Remote
-sessions end, revoking their ``/b/`` tokens, and its tunnel closes. The
-agent learns it from the 401 ``unclaimed`` on its next request (or it asked
-for it, with a release). A new Claim makes a new base with a new ``<id>``.
+Its live Remote sessions end first, revoking their ``/b/`` tokens, and its
+tunnel closes (``ctx.tunnels.end_for_base``; that stands even if the rest
+fails). Then ``BaseEvents.unclaimed`` hooks run (Shares, #94), its record
+and key go (an approved pairing and its Remote session rows with it, by
+cascade) and an audit entry is written, all in one transaction. The agent
+learns it from the 401 ``unclaimed`` on its next request (or it asked for
+it, with a release). A new Claim makes a new base with a new ``<id>``.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from sp_rtk_portal import audit
 from sp_rtk_portal.bases.events import Unclaimed
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Connection
+from sp_rtk_portal.tunnel.end_reason import EndReason
 
 _SELECT = "SELECT id, owner_account_id, name, key_thumbprint FROM base"
 
@@ -32,12 +34,9 @@ async def by_operator(
     deletes their account (``by="account_deleted"``). ``False``: no such
     base of theirs (a Shared user's attempt included)."""
     async with ctx.db.connection() as conn:
-        if not await forget_owned(
+        return await forget_owned(
             ctx, conn, base_id=base_id, account_id=account_id, ip=ip, by=by
-        ):
-            return False
-    await ctx.tunnels.forget_base(base_id)
-    return True
+        )
 
 
 async def forget_owned(
@@ -49,9 +48,8 @@ async def forget_owned(
     ip: str | None,
     by: Literal["portal", "account_deleted"],
 ) -> bool:
-    """The database half of :func:`by_operator`, inside the caller's
-    transaction (account deletion Un-claims every base in one). Once it
-    commits, the caller must ``await ctx.tunnels.forget_base(base_id)``."""
+    """:func:`by_operator` inside the caller's transaction (account deletion
+    Un-claims every base in one)."""
     cur = await conn.execute(
         _SELECT + " WHERE id = %s AND owner_account_id = %s FOR UPDATE",
         (base_id, account_id),
@@ -74,7 +72,6 @@ async def by_base(ctx: PortalContext, *, thumbprint: str, ip: str | None) -> str
         if row is None:
             return None
         await _forgotten(ctx, conn, row, by="base", ip=ip)
-    await ctx.tunnels.forget_base(row["id"])
     return str(row["id"])
 
 
@@ -86,9 +83,12 @@ async def _forgotten(
     by: Literal["base", "portal", "account_deleted"],
     ip: str | None,
 ) -> None:
-    """Hooks first (while the base row still exists, so rows referencing it
-    can go), then the base itself, then the audit entry."""
+    """Remote sessions end first (tokens revoked and tunnel closed, whatever
+    becomes of the transaction), then the hooks (while the base row still
+    exists, so rows referencing it can go), then the base itself, then the
+    audit entry."""
     now = ctx.clock.now()
+    await ctx.tunnels.end_for_base(row["id"], EndReason.UN_CLAIM, ip=ip)
     await ctx.base_events.unclaimed(
         conn,
         Unclaimed(
