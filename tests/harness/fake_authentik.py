@@ -57,7 +57,7 @@ import json
 import secrets
 import struct
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 from urllib.parse import parse_qs, quote, urlencode
 
@@ -116,6 +116,10 @@ class _FlowSession:
     totp_secret: str | None = None
     # What was typed at identification (shown as pending_user if no user).
     identifier: str = ""
+    # Restored from an emailed link: the link's token, and the consent
+    # stage's token while that stage (shown first, like Authentik's) waits.
+    link_token: str = ""
+    consent_token: str = ""
 
 
 @dataclass
@@ -204,7 +208,7 @@ class FakeAuthentik:
         self.executor_requests: list[httpx.Headers] = []
         self.executor_calls: list[tuple[str, str]] = []
         self.api_calls: list[tuple[str, str]] = []
-        self._scripted: list[dict[str, Any]] = []
+        self._scripted: list[dict[str, Any] | None] = []
         self._scripted_redirects: list[str] = []
         self._sessions: dict[str, _FlowSession] = {}
         self._flow_tokens: dict[str, _FlowSession] = {}
@@ -231,7 +235,8 @@ class FakeAuthentik:
         user.email = email
         self.users[email.lower()] = user
 
-    def script_challenge(self, challenge: dict[str, Any]) -> None:
+    def script_challenge(self, challenge: dict[str, Any] | None) -> None:
+        """Replace the next challenge; ``None`` lets it through as is."""
         self._scripted.append(challenge)
 
     def script_redirect(self, location: str) -> None:
@@ -260,7 +265,7 @@ class FakeAuthentik:
     def _respond(self, challenge: dict[str, Any]) -> Response:
         """A challenge (200). A scripted one replaces it; hops aren't replaced."""
         if self._scripted:
-            challenge = self._scripted.pop(0)
+            challenge = self._scripted.pop(0) or challenge
         return JSONResponse(challenge)
 
     def _hop(self, request: Request) -> Response:
@@ -292,15 +297,18 @@ class FakeAuthentik:
         query = parse_qs(request.query_params.get("query", ""))
         next_url = query.get("next", ["/"])[0]
         token = query.get("flow_token", [""])[0]
-        session = self._flow_tokens.pop(token, None)
-        if session is not None and session.slug == slug:
-            # The emailed link was opened: the email stage is done, and the
-            # plan carries on in this new session.
-            session.index += 1
-            if session.user is not None and slug == self.enrollment_flow_slug:
-                session.user.is_active = True
-                session.user.email_verified = True
-            session.next_url = next_url
+        paused = self._flow_tokens.get(token)
+        if paused is not None and paused.slug == slug:
+            # The emailed link was opened: like Authentik, restore a copy of
+            # the paused plan in this new session with a consent stage first
+            # (so link scanners don't use it up). The link is used up only
+            # once that stage is accepted.
+            session = replace(
+                paused,
+                next_url=next_url,
+                link_token=token,
+                consent_token=str(uuid.uuid4()),
+            )
         else:
             existing = self._sessions.get(request.cookies.get(SESSION_COOKIE, ""))
             if existing is not None and existing.slug == slug:
@@ -323,11 +331,36 @@ class FakeAuthentik:
         if session.index >= len(stages):
             return JSONResponse({"detail": "Flow already done."}, status_code=400)
         body = await request.json()
+        if session.consent_token:
+            return self._accept_link(session, body, request)
         error = self._answer(session, stages[session.index], body)
         if error is not None:
             return self._respond(error)
         session.index += 1
         if session.index >= len(stages):
+            return self._respond(_end(session))
+        return self._hop(request)
+
+    def _accept_link(
+        self, session: _FlowSession, body: dict[str, Any], request: Request
+    ) -> Response:
+        """The consent stage of a restored link: Authentik's
+        EmailTokenRevocationConsentStageView."""
+        if body.get("component") != "ak-stage-consent" or (
+            body.get("token") != session.consent_token
+        ):
+            return self._respond(
+                _consent(session.consent_token, errors=_error("token"))
+            )
+        if self._flow_tokens.pop(session.link_token, None) is None:
+            return self._respond(_access_denied(LINK_USED))
+        session.consent_token = ""
+        # The email stage is done; the plan carries on.
+        session.index += 1
+        if session.user is not None and session.slug == self.enrollment_flow_slug:
+            session.user.is_active = True
+            session.user.email_verified = True
+        if session.index >= len(FLOWS[session.slug]):
             return self._respond(_end(session))
         return self._hop(request)
 
@@ -338,6 +371,8 @@ class FakeAuthentik:
         policy doesn't apply, then show the current stage's challenge, or run
         a stage that needs no client (``_PASSED``: a hop follows, unless it
         was the last stage and the flow ends)."""
+        if session.consent_token:
+            return _consent(session.consent_token)
         stages = FLOWS[session.slug]
         while session.index < len(stages):
             stage = stages[session.index]
@@ -638,6 +673,31 @@ CONFIRM_DELETE = "confirm_delete"
 
 # A stage passed without the client (``_step``).
 _PASSED = object()
+
+
+LINK_USED = "Link was already used, please request a new link."
+
+
+def _consent(token: str, errors: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The consent stage Authentik puts first in a plan restored from an
+    emailed link (authentik/stages/email/flow.py)."""
+    return _with_errors(
+        {
+            "component": "ak-stage-consent",
+            "flow_info": {},
+            "pending_user": "",
+            "pending_user_avatar": "",
+            "header_text": "Continue to confirm this email address.",
+            "permissions": [],
+            "additional_permissions": [],
+            "token": token,
+        },
+        errors,
+    )
+
+
+def _access_denied(message: str) -> dict[str, Any]:
+    return {"component": "ak-stage-access-denied", "error_message": message}
 
 
 def _end(session: _FlowSession) -> dict[str, Any]:
