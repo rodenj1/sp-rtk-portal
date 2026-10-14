@@ -207,6 +207,7 @@ async def test_a_foreign_redirect_at_the_end_of_recovery_is_not_followed(
 ):
     authentik.add_user(EMAIL, OLD)
     token = await _request_link(browser, authentik)
+    authentik.script_challenge(None)  # the link's consent stage
     authentik.script_challenge(
         {
             "component": "ak-stage-prompt",

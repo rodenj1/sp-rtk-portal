@@ -3,7 +3,7 @@ link lands back on the Portal, and the ``portal-users`` group (ADR 0003)."""
 
 from urllib.parse import urlsplit
 
-from .harness.fake_authentik import PORTAL_USERS, FakeAuthentik
+from .harness.fake_authentik import LINK_USED, PORTAL_USERS, FakeAuthentik
 from .harness.portal import ORIGIN, Browser
 
 EMAIL = "new.operator@example.com"
@@ -97,6 +97,23 @@ async def test_a_verification_link_works_once(
     assert "expired" in again.json()["error"]
 
 
+async def test_a_link_its_consent_stage_refuses_as_used_has_expired(
+    browser: Browser, authentik: FakeAuthentik
+):
+    # Authentik's consent stage refuses a link used up after it was restored
+    # (opened twice at once).
+    await browser.action("/signup", _sign_up_body(authentik))
+    token = authentik.outbox[0].link.split("t=", 1)[1]
+    authentik.script_challenge(
+        {"component": "ak-stage-access-denied", "error_message": LINK_USED}
+    )
+
+    resp = await browser.action("/verify", {"t": token})
+
+    assert resp.status_code == 400
+    assert "expired" in resp.json()["error"]
+
+
 async def test_a_failed_turnstile_blocks_sign_up(
     browser: Browser, authentik: FakeAuthentik
 ):
@@ -152,7 +169,7 @@ async def test_an_unknown_stage_after_the_verification_link_fails_closed(
 ):
     await browser.action("/signup", _sign_up_body(authentik))
     token = authentik.outbox[0].link.split("t=", 1)[1]
-    authentik.script_challenge({"component": "ak-stage-consent"})
+    authentik.script_challenge({"component": "ak-stage-source-oauth"})
 
     resp = await browser.action("/verify", {"t": token})
 

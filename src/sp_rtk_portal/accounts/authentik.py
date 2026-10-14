@@ -21,7 +21,10 @@ user delete stage delete the user, and checks that the user is gone.
 
 Emailed links land on the Portal (``/verify?t=`` and ``/reset?t=``). Opening
 one runs the flow again with ``flow_token=<t>``, which makes Authentik restore
-the paused flow in a new session, so the link works in any browser.
+the paused flow in a new session, so the link works in any browser. Authentik
+puts a consent stage first in that restored flow and uses the link up only
+once it is accepted (so link scanners don't spend it); the Portal accepts it,
+the user having already pressed the Portal's own confirm button.
 """
 
 from __future__ import annotations
@@ -47,6 +50,7 @@ PASSWORD = "ak-stage-password"
 CAPTCHA = "ak-stage-captcha"
 PROMPT = "ak-stage-prompt"
 EMAIL = "ak-stage-email"
+CONSENT = "ak-stage-consent"
 AUTHENTICATOR_VALIDATE = "ak-stage-authenticator-validate"
 AUTHENTICATOR_TOTP = "ak-stage-authenticator-totp"
 ACCESS_DENIED = "ak-stage-access-denied"
@@ -266,6 +270,7 @@ class Authentik:
             client_ip=client_ip,
             slug=self._settings.enrollment_flow_slug,
             query={"flow_token": token},
+            answers={CONSENT: {}},
         )
         return await self._start(attempt, from_link=True)
 
@@ -304,7 +309,8 @@ class Authentik:
             slug=self._settings.recovery_flow_slug,
             query={"flow_token": token},
             answers={
-                PROMPT: {"password": password, "password_repeat": password_repeat}
+                CONSENT: {},
+                PROMPT: {"password": password, "password_repeat": password_repeat},
             },
         )
         return attempt, await self._start(attempt, from_link=True)
@@ -413,7 +419,15 @@ class Authentik:
             and not challenge.get("response_errors")
         ):
             return LinkExpired()
-        return await self._settle(attempt, await self._drive(attempt, challenge))
+        outcome = await self._settle(attempt, await self._drive(attempt, challenge))
+        if (
+            from_link
+            and isinstance(outcome, Rejected)
+            and outcome.stage == ACCESS_DENIED
+        ):
+            # The link's consent stage refuses a link used up meanwhile.
+            return LinkExpired()
+        return outcome
 
     async def _drive(
         self, attempt: FlowAttempt, challenge: dict[str, Any]
@@ -716,6 +730,9 @@ def _answer(challenge: dict[str, Any], answer: dict[str, Any]) -> dict[str, Any]
     body = dict(answer)
     if component == IDENTIFICATION and not challenge.get("password_fields"):
         body.pop("password", None)  # a separate password stage follows
+    if component == CONSENT:
+        # Echo the token Authentik issued with this challenge.
+        body = {"token": challenge.get("token", "")}
     if component == PROMPT:
         # Fill exactly the fields the pinned prompt has; any field we have no
         # answer for means the flow changed.
