@@ -221,8 +221,8 @@ async def test_a_revoked_token_stops_working_at_once(
     await ws.send("before")
     assert await asyncio.wait_for(ws.recv(), 5) == "echo before"
     base_id = frame.split("/")[2]
-    # e.g. an un-Share, Un-claim or log out everywhere
-    await portal.context.tunnels.end_sessions(EndReason.UN_CLAIM, base_id=base_id)
+    # e.g. an Un-claim or a pause
+    await portal.context.tunnels.end_for_base(base_id, EndReason.UN_CLAIM)
 
     with pytest.raises(ConnectionClosed):
         await asyncio.wait_for(ws.recv(), 5)
@@ -318,7 +318,7 @@ async def test_a_proxy_error_is_stamped(
     portal: Portal, operator: Browser, frame: str, agent: RunningAgent
 ):
     base_id = frame.split("/")[2]
-    await portal.context.tunnels.close_tunnel(base_id)
+    agent.drop_tunnel()
     await eventually(
         lambda: not portal.context.tunnels.tunnel_up(base_id), "the tunnel is down"
     )

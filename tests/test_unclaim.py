@@ -215,10 +215,44 @@ async def test_a_portal_un_claim_cuts_live_remote_sessions_and_refuses_their_tok
     # Nor can anyone start a new one, or see its Session bar.
     assert (await operator.action(f"/bases/{base_id}/remote")).status_code == 404
     assert (await operator.get(f"/bases/{base_id}")).status_code == 404
+    entries = await portal.query(
+        "SELECT kind, detail FROM audit_entry"
+        " WHERE kind IN ('remote_session_end', 'unclaim') ORDER BY id"
+    )
+    assert [e["kind"] for e in entries] == ["remote_session_end", "unclaim"]
+    assert entries[0]["detail"]["reason"] == "un_claim"
+
+
+async def test_a_failed_un_claim_keeps_the_base_but_its_remote_sessions_are_gone(
+    portal: Portal, operator: Browser, agent: RunningAgent
+):
+    # Failing safe: the sessions end, and are recorded as ended, before the
+    # transaction; its rollback keeps the base, and the user opens it again.
+    base_id = await base_of(agent)
+    owner = await account_id(portal, EMAIL)
+    tunnels = portal.context.tunnels
+    await operator.action(f"/bases/{base_id}/remote")
+    session = tunnels.session_for(owner, base_id)
+    assert session is not None
+
+    async def fail(conn, event: Unclaimed) -> None:
+        raise RuntimeError("a hook fails")
+
+    portal.context.base_events.on_unclaimed(fail)
+    with pytest.raises(RuntimeError, match="a hook fails"):
+        await operator.action(f"/bases/{base_id}/unclaim")
+
+    assert [r["id"] for r in await portal.query("SELECT id FROM base")] == [base_id]
+    assert tunnels.state(session) == "ended"
+    await assert_refused_by_the_proxy(operator, base_id, session.token)
+    assert await portal.query("SELECT id FROM audit_entry WHERE kind = 'unclaim'") == []
     ends = await portal.query(
         "SELECT detail FROM audit_entry WHERE kind = 'remote_session_end'"
     )
     assert [e["detail"]["reason"] for e in ends] == ["un_claim"]
+    assert (await operator.action(f"/bases/{base_id}/remote")).status_code == 200
+    reopened = tunnels.session_for(owner, base_id)
+    assert reopened is not None and reopened is not session
 
 
 async def test_a_portal_un_claim_closes_an_open_tunnel(

@@ -15,9 +15,19 @@ All of it is process-local state (the Portal is a single instance, ADR
   returns the live one, or starts one with a fresh path token (≥128 random
   bits). A Session bar's status channel :meth:`TunnelBroker.attend`\\ s it.
   It ends when nobody attended it for the idle timeout, at the hard cap, or
-  when something revokes it (:meth:`TunnelBroker.end_session`,
-  :meth:`TunnelBroker.end_sessions`); its token stops working at once.
-  When a base's last Remote session ends, its tunnel is closed.
+  when the Portal ends it: :meth:`TunnelBroker.end_for_account` (un-Share,
+  leaving, logging out, account deletion) or :meth:`TunnelBroker.end_for_base`
+  (Un-claim, pause). Ending always revokes the token at once; the tunnel
+  closes with the base's last Remote session.
+
+Ending and the caller's transaction: callers end Remote sessions *inside*
+their own transaction (an Un-claim, a Share removal, a log out...), before
+it commits, and the broker records each end (the session's row and its
+audit entry) at once on a connection of its own. So the end stands whatever
+becomes of the caller's transaction, failing safe: a rolled-back Un-claim
+leaves a base whose Remote sessions ended, with the record saying why, and
+its users open it again. The record never waits on a caller, and a row is
+open exactly while its session is live (``remote_session_live_idx``).
 
 Idle timeout and hard cap come from the agent config current when the
 session started.
@@ -268,8 +278,7 @@ class TunnelBroker:
         with contextlib.suppress(Exception):
             await attached.websocket.close(code=1000)
 
-    async def close_tunnel(self, base_id: str) -> None:
-        """Close the base's tunnel now (e.g. on Un-claim)."""
+    async def _drop_tunnel(self, base_id: str) -> None:
         attached = self._tunnels.get(base_id)
         if attached is not None:
             await self._close_tunnel(attached)
@@ -425,8 +434,42 @@ class TunnelBroker:
             base.version += 1
             base.changed.notify_all()
 
-    async def end_session(
-        self, session: RemoteSession, reason: EndReason, ip: str | None = None
+    async def end_for_account(
+        self,
+        account_id: int,
+        reason: EndReason,
+        *,
+        base_id: str | None = None,
+        ip: str | None = None,
+    ) -> None:
+        """The user is out: end their live Remote sessions (on ``base_id``
+        only, if given), revoking their tokens. A base's tunnel closes when
+        its last Remote session goes."""
+        for session in list(self._sessions.values()):
+            if session.account_id == account_id and (
+                base_id is None or session.base_id == base_id
+            ):
+                await self._end(session, reason, ip=ip)
+
+    async def end_for_base(
+        self,
+        base_id: str,
+        reason: EndReason,
+        *,
+        ip: str | None = None,
+    ) -> None:
+        """The base is gone or unreachable (Un-claim, pause): end every
+        Remote session on it, revoking their tokens, drop any pending Wake
+        and close its tunnel."""
+        for session in self._live(base_id):
+            await self._end(session, reason, ip=ip)
+        self._wakes.pop(base_id, None)
+        self._attempts.pop(base_id, None)
+        await self._drop_tunnel(base_id)
+        await self._changed(base_id)
+
+    async def _end(
+        self, session: RemoteSession, reason: EndReason, *, ip: str | None = None
     ) -> None:
         """End ``session`` and revoke its token; closes the base's tunnel if
         it was the last."""
@@ -449,39 +492,8 @@ class TunnelBroker:
         if not self._live(session.base_id):
             self._wakes.pop(session.base_id, None)
             self._attempts.pop(session.base_id, None)
-            await self.close_tunnel(session.base_id)
+            await self._drop_tunnel(session.base_id)
         await self._changed(session.base_id)
-
-    async def end_sessions(
-        self,
-        reason: EndReason,
-        *,
-        account_id: int | None = None,
-        base_id: str | None = None,
-        ip: str | None = None,
-    ) -> int:
-        """End every live Remote session matching ``account_id`` and/or
-        ``base_id`` (un-Share, Un-claim, log out everywhere, account
-        deletion). Returns how many ended."""
-        if account_id is None and base_id is None:
-            raise ValueError("name an account or a base")
-        matching = [
-            s
-            for s in list(self._sessions.values())
-            if (account_id is None or s.account_id == account_id)
-            and (base_id is None or s.base_id == base_id)
-        ]
-        for session in matching:
-            await self.end_session(session, reason, ip)
-        return len(matching)
-
-    async def forget_base(self, base_id: str) -> None:
-        """The base was Un-claimed: end its Remote sessions (revoking their
-        tokens), drop any pending Wake and close its tunnel."""
-        await self.end_sessions(EndReason.UN_CLAIM, base_id=base_id)
-        self._wakes.pop(base_id, None)
-        await self.close_tunnel(base_id)
-        await self._changed(base_id)
 
     # --- timeouts ------------------------------------------------------------
 
@@ -491,7 +503,7 @@ class TunnelBroker:
         now = self._clock.now()
         for session in list(self._sessions.values()):
             if now - session.started_at >= session.hard_cap:
-                await self.end_session(session, EndReason.HARD_CAP)
+                await self._end(session, EndReason.HARD_CAP)
                 continue
             if not session.warned and self.still_there(session):
                 session.warned = True
@@ -501,7 +513,7 @@ class TunnelBroker:
                 and session.left_at is not None
                 and now - session.left_at >= session.idle_timeout
             ):
-                await self.end_session(session, EndReason.LEFT)
+                await self._end(session, EndReason.LEFT)
         for base_id, pending in list(self._wakes.items()):
             if pending.expires_at <= now:
                 del self._wakes[base_id]
