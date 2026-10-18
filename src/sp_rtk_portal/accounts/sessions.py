@@ -51,10 +51,15 @@ async def resume(
     return Account(**row) if row else None
 
 
-async def end(conn: Connection, token: str) -> None:
-    await conn.execute(
-        "DELETE FROM portal_session WHERE token_hash = %s", (token_hash(token),)
+async def end(conn: Connection, token: str) -> int | None:
+    """End the session behind ``token``; its account's id, or ``None`` if
+    there was none."""
+    cur = await conn.execute(
+        "DELETE FROM portal_session WHERE token_hash = %s RETURNING account_id",
+        (token_hash(token),),
     )
+    row = await cur.fetchone()
+    return None if row is None else int(row["account_id"])
 
 
 def set_cookie(response: Response, token: str, lifetime: timedelta) -> None:

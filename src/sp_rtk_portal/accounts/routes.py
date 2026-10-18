@@ -13,7 +13,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from sp_rtk_portal import audit
-from sp_rtk_portal.accounts import attempts, events, review, sessions
+from sp_rtk_portal.accounts import attempts, events, review, security, sessions
 from sp_rtk_portal.accounts.authentik import (
     AuthentikFailedClosed,
     FlowAttempt,
@@ -96,8 +96,7 @@ async def logout(
     request: Request, ctx: PortalContext = Depends(portal_context)
 ) -> JSONResponse:
     if token := request.cookies.get(sessions.COOKIE):
-        async with ctx.db.connection() as conn:
-            await sessions.end(conn, token)
+        await security.log_out(ctx, token=token, ip=client_ip(request))
     response = JSONResponse({"next": "/login"})
     sessions.clear_cookie(response)
     return response

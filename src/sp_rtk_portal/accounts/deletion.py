@@ -113,6 +113,7 @@ async def delete_account(
                     "reason": EndReason.ACCOUNT_DELETED,
                 },
             )
+        await ctx.tunnels.end_for_account(account.id, EndReason.ACCOUNT_DELETED, ip=ip)
         await end_portal_sessions(conn, account.id)
         await conn.execute(
             "UPDATE account SET deleted_at = %s, share_review_due = false"
@@ -127,11 +128,6 @@ async def delete_account(
             ip=ip,
             detail={"email": account.email, "unclaimed": unclaimed},
         )
-    for base_id in unclaimed:
-        await ctx.tunnels.forget_base(base_id)
-    await ctx.tunnels.end_sessions(
-        EndReason.ACCOUNT_DELETED, account_id=account.id, ip=ip
-    )
     try:
         await ctx.authentik.finish_deletion(attempt, sub)
     except Exception as e:

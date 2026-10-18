@@ -20,6 +20,8 @@ class EndReason(StrEnum):
     """The Shared user left the Share."""
     UN_CLAIM = "un_claim"
     """The base was Un-claimed (also a Share's removal reason then)."""
+    LOGGED_OUT = "logged_out"
+    """The user logged out of the Portal."""
     LOG_OUT_EVERYWHERE = "log_out_everywhere"
     ACCOUNT_DELETED = "account_deleted"
     """The account was deleted (also a Share's removal reason then)."""

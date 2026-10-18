@@ -174,10 +174,10 @@ async def poll(
         if seen is None:
             raise _unclaimed()
         await _audit_pause(conn, seen, now, req.ip)
+        if paused:
+            await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
         sessions = [] if paused else await _live_sessions(conn, ctx, seen)
-    if paused:
-        await _cut_paused(ctx, seen.base_id)
     return reply(
         PollReply(
             config=config,
@@ -208,9 +208,8 @@ async def _audit_pause(
 
 async def _cut_paused(ctx: PortalContext, base_id: str) -> None:
     """Remote access is paused on site: its Remote sessions end and its
-    tunnel closes."""
-    await ctx.tunnels.end_sessions(EndReason.PAUSED, base_id=base_id)
-    await ctx.tunnels.close_tunnel(base_id)
+    tunnel closes (before the pause is recorded, as on Un-claim)."""
+    await ctx.tunnels.end_for_base(base_id, EndReason.PAUSED)
 
 
 async def _live_sessions(
@@ -264,14 +263,14 @@ async def check_in(
         if seen is None:
             raise _unclaimed()
         await _audit_pause(conn, seen, now, req.ip)
+        if msg.paused:
+            await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
         ring_key = (
             await presence.ring_key(conn, seen.base_id)
             if config.doorbell_host
             else None
         )
-    if msg.paused:
-        await _cut_paused(ctx, seen.base_id)
     heard = (
         seen.last_doorbell_at is not None
         and now - seen.last_doorbell_at <= online.DOORBELL_OFFLINE_AFTER

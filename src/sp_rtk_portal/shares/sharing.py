@@ -200,9 +200,9 @@ async def remove(
             ip=ip,
             detail={"shared_user": account_id, "email": email},
         )
-    await ctx.tunnels.end_sessions(
-        EndReason.UN_SHARE, account_id=account_id, base_id=base_id
-    )
+        await ctx.tunnels.end_for_account(
+            account_id, EndReason.UN_SHARE, base_id=base_id
+        )
     return True
 
 
@@ -224,9 +224,9 @@ async def leave(
             ip=ip,
             detail={"shared_user": account_id, "email": email},
         )
-    await ctx.tunnels.end_sessions(
-        EndReason.SHARE_LEFT, account_id=account_id, base_id=base_id
-    )
+        await ctx.tunnels.end_for_account(
+            account_id, EndReason.SHARE_LEFT, base_id=base_id
+        )
     return True
 
 

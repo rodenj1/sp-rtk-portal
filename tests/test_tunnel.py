@@ -34,6 +34,8 @@ from wsproto.events import (
     TextMessage,
 )
 
+from sp_rtk_portal.tunnel.end_reason import EndReason
+
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
 from .harness.fake_authentik import FakeAuthentik
@@ -453,6 +455,39 @@ async def test_remote_session_start_and_end_are_audited_with_who_base_time_and_i
     assert (
         entries[0]["detail"]["remote_session"] == entries[1]["detail"]["remote_session"]
     )
+
+
+async def test_ending_inside_a_failing_transaction_still_ends_and_records_it(
+    portal: Portal, operator: Browser, agent: RunningAgent
+):
+    # Callers end Remote sessions inside their own transaction (an Un-claim,
+    # a pause...); the end, and its record, stand whatever becomes of it.
+    base_id = await base_of(agent)
+    [account] = await portal.query("SELECT id FROM account WHERE email = %s", EMAIL)
+    tunnels = portal.context.tunnels
+    await open_remotely(operator, base_id)
+    session = tunnels.session_for(account["id"], base_id)
+    assert session is not None
+
+    with pytest.raises(RuntimeError, match="the caller's transaction fails"):
+        async with portal.context.db.connection():
+            await tunnels.end_for_base(base_id, EndReason.PAUSED)
+            raise RuntimeError("the caller's transaction fails")
+
+    assert tunnels.state(session) == "ended"
+    assert tunnels.lookup(base_id, session.token) is None
+    assert tunnels.session_for(account["id"], base_id) is None
+    rows = await portal.query(
+        "SELECT end_reason FROM remote_session WHERE id = %s", session.id
+    )
+    assert rows == [{"end_reason": "paused"}]
+    ends = await portal.query(
+        "SELECT detail FROM audit_entry WHERE kind = 'remote_session_end'"
+    )
+    assert [e["detail"]["reason"] for e in ends] == ["paused"]
+    # And the user opens the base again (one live row per account and base).
+    await open_remotely(operator, base_id)
+    assert tunnels.session_for(account["id"], base_id) is not None
 
 
 async def test_only_a_user_who_may_reach_the_base_can_open_it(
