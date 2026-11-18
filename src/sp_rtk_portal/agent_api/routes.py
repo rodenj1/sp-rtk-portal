@@ -238,10 +238,8 @@ async def check_in(
     req: AgentRequest = Depends(agent_request),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
-    """The slow status report: versions, Doorbell health, LAN addresses and
-    (from protocol package 0.9) remote access paused, handled as on a poll.
-    The reply says whether the Portal hears the base's Doorbell, and gives it its
-    ring key while the agent config names a Doorbell host."""
+    """The slow status report: versions, LAN addresses and (from protocol
+    package 0.9) remote access paused, handled as on a poll."""
     msg = req.message(CheckIn)
     async with ctx.db.connection() as conn:
         config = await agent_config.current(conn, ctx.settings)
@@ -266,24 +264,7 @@ async def check_in(
         if msg.paused:
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
-        ring_key = (
-            await presence.ring_key(conn, seen.base_id)
-            if config.doorbell_host
-            else None
-        )
-    heard = (
-        seen.last_doorbell_at is not None
-        and now - seen.last_doorbell_at <= online.DOORBELL_OFFLINE_AFTER
-    )
-    return reply(
-        CheckInReply(
-            config=config,
-            metered=seen.metered,
-            notices=notices,
-            doorbell_heard=heard and ring_key is not None,
-            ring_key=ring_key,
-        )
-    )
+    return reply(CheckInReply(config=config, metered=seen.metered, notices=notices))
 
 
 @router.post(RELEASE_PATH)

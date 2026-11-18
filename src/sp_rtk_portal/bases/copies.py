@@ -1,7 +1,7 @@
 """Possible copy (ticket #98): a base key used from two places at once.
 
-Every sign of life with a trusted client IP (poll, Check-in, Doorbell
-keepalive) is shown to :class:`CopyWatch`. It remembers, per base, the runs
+Every sign of life with a trusted client IP (poll, Check-in) is shown to
+:class:`CopyWatch`. It remembers, per base, the runs
 of consecutive requests from one IP over the last ``possible_copy_window``.
 A request from an IP that had an earlier run, with a run from another IP
 since (A, B, A), is interleaving: two devices hold the key. A base that

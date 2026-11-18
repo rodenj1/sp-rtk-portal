@@ -5,8 +5,8 @@ status channel (``/bases/<id>/session``).
 "reason": <why it ended> | None, "frame": "/b/<id>/s/<token>/" (until it
 ends), "still_there": bool, "cap_at": ISO time the hard cap pauses it,
 "present": [{"name", "role"}] (other users with a Session bar open on this
-base), "last_seen": "YYYY-MM-DD HH:MM UTC" | "never", "wake_mode": "Doorbell"
-| "Polling every 20 s" ..., "renew": bool (renew the lease now: the bar
+base), "last_seen": "YYYY-MM-DD HH:MM UTC" | "never", "wake_mode": "Polling every 20 s"
+| "Polling every 60 s (metered)", "renew": bool (renew the lease now: the bar
 answers ``{"type": "renew"}``), "lease_expires_at": ISO time the path token
 is refused unless renewed (until it ends)}``.
 

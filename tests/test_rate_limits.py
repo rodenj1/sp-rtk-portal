@@ -260,8 +260,8 @@ async def test_a_few_early_polls_pass_before_the_limit_bites(
     portal: Portal, operator: Browser
 ):
     async with _claimed(portal, operator) as agent:
-        # The agent's own poll used one of 3; a restart, a resumed pause or
-        # a Doorbell change may each bring one forward.
+        # The agent's own poll used one of 3; a restart or a resumed pause
+        # may each bring one forward.
         assert (await _poll(portal, agent)).status_code == 200
         assert (await _poll(portal, agent)).status_code == 200
 

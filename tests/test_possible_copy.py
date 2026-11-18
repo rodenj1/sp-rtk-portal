@@ -16,18 +16,10 @@ from collections.abc import AsyncIterator
 from datetime import timedelta
 from typing import Any
 
-import httpx
 import pytest
-from sp_rtk_portal_protocol import (
-    CHECK_IN_PATH,
-    POLL_PATH,
-    HeardKeepalive,
-    KeepalivesReport,
-    doorbell,
-)
+from sp_rtk_portal_protocol import CHECK_IN_PATH, POLL_PATH
 
 from .harness.agent import RunningAgent, running_agent
-from .harness.doorbell_server import DOORBELL_TOKEN
 from .harness.fake_authentik import FakeAuthentik
 from .harness.fake_smtp import FakeSmtp
 from .harness.pages import base_card
@@ -184,34 +176,6 @@ async def test_a_possible_copy_is_audited(
     assert entry["base_id"] == (await agent.status()).base_id
     assert entry["ip"] == agent.ip
     assert entry["detail"] == {"ips": [COPY_IP, agent.ip]}
-
-
-async def test_doorbell_keepalives_count_too(
-    portal: Portal, operator: Browser, agent: RunningAgent
-):
-    # A copy on the Doorbell polls no more: its keepalives give its address.
-    portal.clock.advance(seconds=5)
-    packet = doorbell.keepalive(agent.key, now=portal.clock.now())
-    report = KeepalivesReport(
-        keepalives=[
-            HeardKeepalive(
-                packet=doorbell.encode_packet(packet), address=COPY_IP, port=40000
-            )
-        ]
-    )
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=portal.app), base_url=portal.origin
-    ) as http:
-        resp = await http.post(
-            doorbell.KEEPALIVES_PATH,
-            json=report.to_json(),
-            headers={"Authorization": f"Bearer {DOORBELL_TOKEN}"},
-        )
-    assert resp.json()["results"] == ["ok"]
-    await agent.run(seconds=20)
-
-    [flag] = (await _card(operator, agent))["possible-copy"]
-    assert COPY_IP in flag
 
 
 async def test_a_dual_stack_base_switching_between_ipv4_and_ipv6_is_not_a_copy(

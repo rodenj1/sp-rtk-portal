@@ -4,9 +4,8 @@ clock, and only the test moves that clock on.
 ``run(seconds=60)`` lets a minute pass, waking each sleep on the way (so the
 agent polls exactly when it would have); ``step()`` jumps to the next sleep.
 After waking a sleep it waits (in real time) until that task sleeps again or
-ends, so the requests it makes have landed before the test looks; then for
-each of ``quiesce`` (e.g. a stub Doorbell server relaying the keepalive the
-agent just sent), so nothing lags behind virtual time.
+ends, so the requests it makes have landed before the test looks and nothing
+lags behind virtual time.
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
-from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -35,7 +33,6 @@ class AgentTime:
         self.clock = clock
         self._sleepers: list[_Sleeper] = []
         self._seq = itertools.count()
-        self.quiesce: list[Callable[[], Awaitable[None]]] = []
 
     async def sleep(self, seconds: float) -> None:
         sleeper = _Sleeper(
@@ -60,8 +57,6 @@ class AgentTime:
             self.clock.advance(sleeper.deadline - self.clock.now())
         sleeper.future.set_result(None)
         await self.settle(sleeper.task, after=sleeper.seq)
-        for quiet in self.quiesce:
-            await quiet()
 
     async def settle(self, task: asyncio.Task[Any] | None, after: int = -1) -> None:
         """Wait (real time) until ``task`` sleeps again or ends."""
