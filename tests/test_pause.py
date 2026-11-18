@@ -108,8 +108,8 @@ async def test_a_paused_base_shows_remote_access_paused_and_cannot_be_opened(
 async def test_a_check_in_carries_the_pause_for_a_base_that_rarely_polls(
     portal: Portal, operator: Browser, agent: RunningAgent
 ):
-    """In Doorbell mode the agent polls only while its tunnel is open, so
-    its Check-ins say whether remote access is paused too."""
+    """Check-ins say whether remote access is paused too, so a base that
+    rarely polls still tells the Portal."""
     base_id = await base_of(agent)
 
     async with signing_agent(portal, ip=BASE_IP) as base:

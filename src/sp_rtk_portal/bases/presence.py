@@ -1,5 +1,4 @@
-"""Signs of life from a Claimed base's agent: polls, Check-ins, Doorbell
-keepalives (relayed by the Doorbell server), and 426s.
+"""Signs of life from a Claimed base's agent: polls, Check-ins and 426s.
 
 Each finds the base by its key's thumbprint (``None``: no such base, the
 agent gets 401 ``unclaimed``) and records when it was seen, from which public
@@ -11,9 +10,8 @@ from __future__ import annotations
 import json
 from dataclasses import KW_ONLY, dataclass
 from datetime import datetime
-from typing import Any
 
-from sp_rtk_portal_protocol import CheckIn, doorbell
+from sp_rtk_portal_protocol import CheckIn
 
 from sp_rtk_portal.db import Connection
 
@@ -27,7 +25,6 @@ class Seen:
     paused: bool = False
     was_paused: bool = False
     """Before this poll or Check-in (a change is audited)."""
-    last_doorbell_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -99,12 +96,12 @@ async def checked_in(
         "UPDATE base SET last_seen_at = %s, last_check_in_at = %s,"
         " protocol_version = %s, public_ip = coalesce(%s::inet, public_ip),"
         " needs_upgrade = false, polled_metered = metered,"
-        " software_version = %s, doorbell = %s, lan_addresses = %s,"
+        " software_version = %s, lan_addresses = %s,"
         " remote_paused = coalesce(%s, remote_paused)"
         " FROM (SELECT id AS old_id, remote_paused AS was_paused FROM base"
         "       WHERE key_thumbprint = %s FOR UPDATE) AS old"
         " WHERE base.id = old.old_id"
-        " RETURNING id, metered, last_doorbell_at, owner_account_id,"
+        " RETURNING id, metered, owner_account_id,"
         " remote_paused, was_paused",
         (
             now,
@@ -112,7 +109,6 @@ async def checked_in(
             protocol_version,
             ip,
             check_in.software_version,
-            check_in.doorbell,
             json.dumps([a.to_json() for a in check_in.lan_addresses]),
             check_in.paused,
             thumbprint,
@@ -127,46 +123,7 @@ async def checked_in(
         owner_account_id=row["owner_account_id"],
         paused=row["remote_paused"],
         was_paused=row["was_paused"],
-        last_doorbell_at=row["last_doorbell_at"],
     )
-
-
-@dataclass(frozen=True)
-class DoorbellBase:
-    id: str
-    public_key: dict[str, Any]
-    ring_key: str | None
-
-
-async def by_key(conn: Connection, thumbprint: str) -> DoorbellBase | None:
-    """The base whose key this is, to check a keepalive's signature."""
-    cur = await conn.execute(
-        "SELECT id, public_key, ring_key FROM base WHERE key_thumbprint = %s",
-        (thumbprint,),
-    )
-    row = await cur.fetchone()
-    return DoorbellBase(**row) if row else None
-
-
-async def rang(conn: Connection, *, base_id: str, now: datetime) -> None:
-    """A keepalive the Doorbell server relayed and the Portal verified: a
-    sign of life."""
-    await conn.execute(
-        "UPDATE base SET last_seen_at = %s, last_doorbell_at = %s WHERE id = %s",
-        (now, now, base_id),
-    )
-
-
-async def ring_key(conn: Connection, base_id: str) -> str:
-    """The base's ring key, made the first time it is asked for."""
-    cur = await conn.execute(
-        "UPDATE base SET ring_key = coalesce(ring_key, %s) WHERE id = %s"
-        " RETURNING ring_key",
-        (doorbell.new_ring_key(), base_id),
-    )
-    row = await cur.fetchone()
-    assert row is not None
-    return str(row["ring_key"])
 
 
 async def refused_as_too_old(

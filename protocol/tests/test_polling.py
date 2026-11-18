@@ -25,8 +25,6 @@ def test_a_poll_reply_round_trips_with_its_config_and_notices():
             poll_interval=20,
             metered_poll_interval=60,
             check_in_interval=300,
-            doorbell_host="bell.example.com",
-            doorbell_port=4500,
             tunnel_url="wss://sp-rtk-base.big-spray.com/agent/tunnel",
             tunnel_idle_timeout=120,
             tunnel_hard_cap=3600,
@@ -41,7 +39,6 @@ def test_a_poll_reply_round_trips_with_its_config_and_notices():
 def test_a_check_in_round_trips_with_its_lan_addresses():
     check_in = CheckIn(
         software_version="0.11.0",
-        doorbell="off",
         lan_addresses=[
             LanAddress(address="192.168.1.20", interface="eth0", primary=True),
             LanAddress(address="10.0.0.5", interface="wlan0", primary=False),
@@ -57,8 +54,6 @@ def test_the_config_block_takes_built_in_defaults_for_what_it_lacks():
     assert config.poll_interval == 20
     assert config.metered_poll_interval == 60
     assert config.check_in_interval == 300
-    assert config.doorbell_host is None
-    assert config.doorbell_port is None
     assert config.tunnel_url == ""  # the agent's built-in tunnel URL
     assert config.tunnel_idle_timeout == 120
     assert config.tunnel_hard_cap == 3600
@@ -91,7 +86,7 @@ def test_a_poll_says_whether_remote_access_is_paused():
         (PollReply, {"config": {"revision": 1}, "notices": "x"}),
         (PollReply, {"config": {"revision": 1}, "notices": [1]}),
         (PollReply, {"config": {"revision": 1}, "metered": 1}),
-        (AgentConfig, {"revision": 1, "doorbell_port": "4500"}),
+        (AgentConfig, {"revision": 1, "poll_interval": "20"}),
         (AgentConfig, {"revision": True}),
         (CheckIn, {"lan_addresses": [{"interface": "eth0"}]}),
     ],
@@ -102,9 +97,16 @@ def test_a_mistyped_field_is_refused(cls, data):
 
 
 def test_an_optional_field_may_be_null():
-    config = AgentConfig.from_json({"revision": 1, "doorbell_host": None})
+    assert CheckIn.from_json({"paused": None}).paused is None
 
-    assert config.doorbell_host is None
+
+def test_a_config_block_naming_a_doorbell_host_still_parses():
+    # From a Portal before the Doorbell was dropped (ADR 0006).
+    config = AgentConfig.from_json(
+        {"revision": 4, "doorbell_host": "bell.example.com", "doorbell_port": 4500}
+    )
+
+    assert config == AgentConfig(revision=4)
 
 
 def test_upgrade_required_names_the_minimum_version():

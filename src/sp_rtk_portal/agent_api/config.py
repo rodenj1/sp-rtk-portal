@@ -7,16 +7,16 @@ an agent applies a block only when the revision differs from its own. With no
 row yet the Portal serves the built-in defaults as revision 1.
 
 The Portal refuses a config the agent would ignore (a timing out of range, a
-tunnel URL that isn't ``wss://`` on the Portal's own host, a Doorbell host
-without a port); the agent checks the same things again, since it doesn't
-trust the Portal with its network.
+tunnel URL that isn't ``wss://`` on the Portal's own host); the agent checks
+the same things again, since it doesn't trust the Portal with its network.
+A row saved before the Doorbell was dropped (ADR 0006) still names a Doorbell
+host and port: reading it ignores them, as it ignores any unknown field.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
-import re
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -37,8 +37,6 @@ RANGES: dict[str, tuple[int, int]] = {
 }
 """Seconds; the agent ignores a value outside these (sp-rtk-base
 ``portal_agent.agent_config.RANGES``)."""
-
-_HOSTNAME = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9-]{1,63}\.)*[A-Za-z0-9-]{1,63}$")
 
 
 class ConfigRefused(Exception):
@@ -74,16 +72,11 @@ def updated(
         if name not in fields:
             continue
         text = "" if raw is None else str(raw).strip()
-        if name in RANGES or name == "doorbell_port":
-            if text == "" and name == "doorbell_port":
-                changes[name] = None
-                continue
+        if name in RANGES:
             try:
                 changes[name] = int(text)
             except ValueError:
                 raise ConfigRefused(f"{name} must be a whole number") from None
-        elif name == "doorbell_host":
-            changes[name] = text or None
         else:
             changes[name] = text
     config = dataclasses.replace(base, **changes)
@@ -104,12 +97,6 @@ def check(config: AgentConfig, settings: Settings) -> None:
                 f"The tunnel URL must be wss://{portal.netloc}/...: an agent "
                 "ignores any other"
             )
-    if config.doorbell_host is not None:
-        if not _HOSTNAME.match(config.doorbell_host):
-            raise ConfigRefused("The Doorbell host must be a host name")
-        port = config.doorbell_port
-        if port is None or not 0 < port < 65536:
-            raise ConfigRefused("A Doorbell host needs a port (1-65535)")
 
 
 async def save(
