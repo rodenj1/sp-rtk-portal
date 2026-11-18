@@ -228,7 +228,8 @@ class Poll(Message):
 
 @dataclass(frozen=True)
 class LiveSession(Message):
-    """A live Remote session on the base, for its local Portal page."""
+    """A live Remote session on the base, for its local Portal page and its
+    own record of Remote sessions (the Event log)."""
 
     who: str
     """The user's email."""
@@ -236,6 +237,54 @@ class LiveSession(Message):
     """When the Remote session started (ISO 8601, UTC)."""
     shared: bool = False
     """The user has the base through a Share (not its Operator)."""
+    id: str = ""
+    """The Remote session's id, unique on the Portal (protocol package
+    0.10.0), so the agent can match an :class:`EndedSession` to its start.
+    Empty from an older Portal."""
+
+
+END_LEFT = "left"
+"""The user left: logged out, or left the Share."""
+END_IDLE = "idle"
+"""Nobody had the Session bar open for the idle timeout."""
+END_PAUSED = "paused"
+"""Remote access was paused on the base."""
+END_LEASE_EXPIRED = "lease_expired"
+"""The path token's lease ran out (the Session bar stopped renewing it)."""
+END_REVOKED = "revoked"
+"""The Portal took the user's access away: un-Share, Un-claim, account
+deletion."""
+END_HARD_CAP = "hard_cap"
+"""The Remote session reached its hard cap."""
+
+END_REASONS = (
+    END_LEFT,
+    END_IDLE,
+    END_PAUSED,
+    END_LEASE_EXPIRED,
+    END_REVOKED,
+    END_HARD_CAP,
+)
+"""Why a Remote session ended, as the base hears it. A reader shows any
+other value as is (a newer Portal may add reasons)."""
+
+
+@dataclass(frozen=True)
+class EndedSession(Message):
+    """A Remote session that ended, with its reason: the whole record, so
+    the base can log a session it never saw live. A poll reply carries the
+    recent ones; the tunnel's Session ended message carries the same."""
+
+    id: str
+    """As in :attr:`LiveSession.id`."""
+    who: str
+    since: str
+    """When it started (ISO 8601, UTC)."""
+    at: str
+    """When it ended (ISO 8601, UTC)."""
+    reason: str
+    """One of :data:`END_REASONS`."""
+    shared: bool = False
 
 
 @dataclass(frozen=True)
@@ -253,6 +302,10 @@ class PollReply(Message):
     sessions: list[LiveSession] = dataclasses.field(default_factory=list)
     """The base's live Remote sessions, oldest first (protocol package
     0.6.0): its local Portal page lists them."""
+    ended: list[EndedSession] = dataclasses.field(default_factory=list)
+    """Remote sessions on the base that ended lately, oldest first (protocol
+    package 0.10.0). The same end may come in several replies: the agent
+    keeps each id once."""
 
 
 @dataclass(frozen=True)
