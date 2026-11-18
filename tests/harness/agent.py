@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -132,8 +132,10 @@ class RunningAgent:
         *,
         server_port: int | None = None,
         app_port: int | None = None,
+        transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
     ) -> None:
         self.portal = portal
+        self._transport = transport
         self.server_port = server_port
         self.app_port = app_port
         self.tunnel_urls: list[str] = []
@@ -181,7 +183,11 @@ class RunningAgent:
         self._agent = PortalAgent(
             self.state_dir,
             portal_url=self.portal.origin,
-            transport=CloudflareTransport(self.portal.app, self.ip, self),
+            transport=(
+                self._transport(self)
+                if self._transport is not None
+                else CloudflareTransport(self.portal.app, self.ip, self)
+            ),
             now=self.portal.clock.now,
             sleep=self.time.sleep,
             name="pi-north",
@@ -264,7 +270,10 @@ async def running_agent(
     *,
     server_port: int | None = None,
     app_port: int | None = None,
+    transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
 ) -> AsyncIterator[RunningAgent]:
+    """``transport``: what carries the agent's HTTPS (by default
+    :class:`CloudflareTransport`; see :mod:`.wire`)."""
     # AF_UNIX paths are capped near 108 bytes: keep the temp dir short.
     with tempfile.TemporaryDirectory(prefix="agent-") as d:
         agent = RunningAgent(
@@ -274,6 +283,7 @@ async def running_agent(
             ip,
             server_port=server_port,
             app_port=app_port,
+            transport=transport,
         )
         await agent.start()
         try:

@@ -23,6 +23,7 @@ from .harness.fake_authentik import FakeAuthentik
 from .harness.pages import base_card, fields
 from .harness.portal import PORTAL_OWNER, Browser, Portal
 from .harness.signer import signing_agent
+from .harness.wire import wire
 
 EMAIL = "operator@example.com"
 PASSWORD = "correct horse battery staple"
@@ -475,32 +476,35 @@ async def test_a_poll_from_an_unknown_key_is_unclaimed(portal: Portal):
 # --- Cost ---------------------------------------------------------------------------
 
 MONTH_S = 30 * 24 * 3600
-TRANSPORT_OVERHEAD = 400
-"""Bytes per request/response pair beyond HTTP: TLS 1.3 record framing
-(2 x 22 B), TCP/IP headers for ~4 segments each way (8 x 52 B), on a
-connection kept alive between polls. A new TLS session per poll would add
-~5 kB (certificate chain), which keep-alive avoids at 20 s."""
+TCP_IP_OVERHEAD = 420
+"""Bytes per request/response pair below TLS: TCP/IP headers for ~4
+segments each way (8 x 52 B). The wire counts everything above (TLS
+records, and any handshake)."""
 CLOUDFLARE_HEADERS = 700
 """Response headers Cloudflare adds (date, server, cf-ray, alt-svc, nel,
 report-to, ...), which the in-process app doesn't."""
 
 
 async def test_polling_costs_at_most_half_a_gigabyte_a_month(
-    portal: Portal, agent: RunningAgent
+    portal: Portal, operator: Browser
 ):
-    agent.traffic.__init__()
-    await agent.run(hours=1)
+    """Measured at the wire (ticket #201): polls and Check-ins reuse one
+    connection, so there's no TLS handshake to pay each time (a new
+    connection per poll measured ~3.1 kB here with a small test certificate,
+    ~6.1 kB through Cloudflare: ~890 MB/month)."""
+    async with wire(portal) as w, running_agent(portal, transport=w.transport) as a:
+        await a.claim(operator)
+        requests = len(a.requests)
+        w.sent = w.received = 0
+        await a.run(hours=1)
 
-    t = agent.traffic
-    per_hour = (
-        t.sent + t.received + t.requests * (TRANSPORT_OVERHEAD + CLOUDFLARE_HEADERS)
-    )
+    n = len(a.requests) - requests
+    per_hour = w.sent + w.received + n * (TCP_IP_OVERHEAD + CLOUDFLARE_HEADERS)
     per_month = per_hour * MONTH_S / 3600
     print(
-        f"\n{t.requests} requests/h, {t.sent / t.requests:.0f} B up and "
-        f"{t.received / t.requests:.0f} B down each (HTTP); "
-        f"~{per_month / 1e6:.0f} MB/month with {TRANSPORT_OVERHEAD} B/request "
-        f"transport overhead and {CLOUDFLARE_HEADERS} B of Cloudflare headers"
+        f"\n{n} requests/h, {w.sent / n:.0f} B up and {w.received / n:.0f} B down "
+        f"each (TLS); ~{per_month / 1e6:.0f} MB/month with {TCP_IP_OVERHEAD} B/request "
+        f"of TCP/IP and {CLOUDFLARE_HEADERS} B of Cloudflare headers"
     )
-    assert t.requests == 180 + 12  # polls every 20 s, Check-ins every 5 min
+    assert n == 180 + 12  # polls every 20 s, Check-ins every 5 min
     assert per_month <= 0.5e9
