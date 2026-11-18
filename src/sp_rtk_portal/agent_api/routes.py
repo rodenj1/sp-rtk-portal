@@ -19,6 +19,7 @@ from sp_rtk_portal_protocol import (
     ClaimStart,
     ClaimStarted,
     ClaimToken,
+    EndedSession,
     ErrorReply,
     LiveSession,
     Poll,
@@ -39,7 +40,7 @@ from sp_rtk_portal.agent_api.auth import (
 from sp_rtk_portal.bases import claims, copies, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.db import Connection
-from sp_rtk_portal.tunnel.end_reason import EndReason
+from sp_rtk_portal.tunnel.end_reason import EndReason, for_base
 from sp_rtk_portal.web.client_ip import rate_key
 
 router = APIRouter()
@@ -177,7 +178,7 @@ async def poll(
         if paused:
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
-        sessions = [] if paused else await _live_sessions(conn, ctx, seen)
+    sessions = [] if paused else _live_sessions(ctx, seen.base_id)
     return reply(
         PollReply(
             config=config,
@@ -185,6 +186,7 @@ async def poll(
             notices=notices,
             wake=ctx.tunnels.wake_for_poll(seen.base_id),
             sessions=sessions,
+            ended=_recent_ends(ctx, seen.base_id),
         )
     )
 
@@ -212,24 +214,28 @@ async def _cut_paused(ctx: PortalContext, base_id: str) -> None:
     await ctx.tunnels.end_for_base(base_id, EndReason.PAUSED)
 
 
-async def _live_sessions(
-    conn: Connection, ctx: PortalContext, seen: presence.Seen
-) -> list[LiveSession]:
-    live = ctx.tunnels.live_sessions(seen.base_id)
-    if not live:
-        return []
-    cur = await conn.execute(
-        "SELECT id, email FROM account WHERE id = ANY(%s)",
-        ([s.account_id for s in live],),
-    )
-    emails = {row["id"]: row["email"] for row in await cur.fetchall()}
+def _live_sessions(ctx: PortalContext, base_id: str) -> list[LiveSession]:
     return [
         LiveSession(
-            who=emails.get(s.account_id, "?"),
-            since=s.started_at.isoformat(),
-            shared=s.account_id != seen.owner_account_id,
+            who=s.who, since=s.started_at.isoformat(), shared=s.shared, id=str(s.id)
         )
-        for s in live
+        for s in ctx.tunnels.live_sessions(base_id)
+    ]
+
+
+def _recent_ends(ctx: PortalContext, base_id: str) -> list[EndedSession]:
+    """The base's recent Remote session ends, for its own record."""
+    return [
+        EndedSession(
+            id=str(s.id),
+            who=s.who,
+            since=s.started_at.isoformat(),
+            at=s.ended_at.isoformat(),
+            reason=for_base(s.end_reason),
+            shared=s.shared,
+        )
+        for s in ctx.tunnels.recent_ends(base_id)
+        if s.ended_at is not None and s.end_reason is not None
     ]
 
 

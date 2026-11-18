@@ -28,6 +28,10 @@ leaves a base whose Remote sessions ended, with the record saying why, and
 its users open it again. The record never waits on a caller, and a row is
 open exactly while its session is live (``remote_session_live_idx``).
 
+The broker keeps each base's Remote sessions that ended in the last
+:data:`ENDS_KEPT`, with their reasons, for the base's own record (its
+polls list them, :meth:`TunnelBroker.recent_ends`).
+
 Idle timeout and hard cap come from the agent config current when the
 session started.
 
@@ -75,6 +79,11 @@ WAKE_GRACE = timedelta(seconds=15)
 Didn't wake (35 s, or 75 s metered, with the default intervals)."""
 
 
+ENDS_KEPT = timedelta(minutes=10)
+"""How long a base's ended Remote sessions are kept for its polls: several
+poll intervals, even metered (the agent keeps each end once)."""
+
+
 class TunnelDown(Exception):
     """The base has no tunnel open."""
 
@@ -101,6 +110,11 @@ class RemoteSession:
     end_reason: EndReason | None = None
     warned: bool = False
     """Its bars were told Still there? (until Keep going)."""
+    who: str = ""
+    """The user's email, at the start."""
+    shared: bool = False
+    """The user has the base through a Share (not its Operator)."""
+    ended_at: datetime | None = None
 
 
 SessionState = Literal["waking", "reconnecting", "didnt_wake", "connected", "ended"]
@@ -148,6 +162,7 @@ class TunnelBroker:
         self._sessions: dict[int, RemoteSession] = {}
         self._bases: dict[str, _Base] = {}
         self._attempts: dict[str, _Attempt] = {}
+        self._ends: dict[str, list[RemoteSession]] = {}
         self._stopping = False
         self._sweeper: asyncio.Task[None] | None = None
 
@@ -302,6 +317,12 @@ class TunnelBroker:
             token = secrets.token_urlsafe(TOKEN_BYTES)
             async with self._db.connection() as conn:
                 config = await agent_config.current(conn, self._settings)
+                cur = await conn.execute(
+                    "SELECT a.email, b.owner_account_id IS DISTINCT FROM a.id"
+                    " AS shared FROM account a, base b WHERE a.id = %s AND b.id = %s",
+                    (account_id, base_id),
+                )
+                user = await cur.fetchone()
                 session_id = await store.started(
                     conn,
                     account_id=account_id,
@@ -321,6 +342,8 @@ class TunnelBroker:
                 hard_cap=timedelta(seconds=config.tunnel_hard_cap),
                 ip=ip,
                 left_at=now,
+                who=user["email"] if user else "",
+                shared=bool(user and user["shared"]),
             )
             self._sessions[session.id] = session
             log.info("Remote session %s started on base %s", session.id, base_id)
@@ -352,6 +375,14 @@ class TunnelBroker:
             if hmac.compare_digest(session.token, token) and session.base_id == base_id:
                 found = session
         return found
+
+    def recent_ends(self, base_id: str) -> list[RemoteSession]:
+        """The base's Remote sessions that ended in the last
+        :data:`ENDS_KEPT`, oldest first."""
+        since = self._clock.now() - ENDS_KEPT
+        return [
+            s for s in self._ends.get(base_id, []) if s.ended_at and s.ended_at > since
+        ]
 
     def touch(self, session: RemoteSession) -> None:
         """Record activity (a proxied request)."""
@@ -468,7 +499,9 @@ class TunnelBroker:
         if session.ended or self._sessions.get(session.id) is not session:
             return
         session.ended, session.end_reason = True, reason
+        session.ended_at = self._clock.now()
         del self._sessions[session.id]
+        self._ends.setdefault(session.base_id, []).append(session)
         async with self._db.connection() as conn:
             await store.ended(
                 conn,
@@ -506,6 +539,11 @@ class TunnelBroker:
                 and now - session.left_at >= session.idle_timeout
             ):
                 await self._end(session, EndReason.LEFT)
+        for base_id in list(self._ends):
+            if not (kept := self.recent_ends(base_id)):
+                del self._ends[base_id]
+            else:
+                self._ends[base_id] = kept
         for base_id, pending in list(self._wakes.items()):
             if pending.expires_at <= now:
                 del self._wakes[base_id]
