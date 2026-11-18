@@ -224,6 +224,11 @@ class AgentConfig(Message):
     """Close the tunnel this long after the last browser leaves."""
     tunnel_hard_cap: int = 3600
     """A Remote session's hard cap."""
+    lease_length: int = 300
+    """How long a Remote session's path token lives after its Session bar
+    last renewed it (Session bar only: the agent ignores it)."""
+    lease_renewal_interval: int = 60
+    """How often the Session bar renews the lease (Session bar only)."""
 
 
 @dataclass(frozen=True)

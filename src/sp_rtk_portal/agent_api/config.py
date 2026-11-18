@@ -34,9 +34,12 @@ RANGES: dict[str, tuple[int, int]] = {
     "check_in_interval": (60, 86400),
     "tunnel_idle_timeout": (10, 86400),
     "tunnel_hard_cap": (60, 86400),
+    "lease_length": (60, 3600),
+    "lease_renewal_interval": (10, 600),
 }
 """Seconds; the agent ignores a value outside these (sp-rtk-base
-``portal_agent.agent_config.RANGES``)."""
+``portal_agent.agent_config.RANGES``). The lease ones are the Session bar's
+alone: the agent has no range for them."""
 
 _HOSTNAME = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9-]{1,63}\.)*[A-Za-z0-9-]{1,63}$")
 
@@ -96,6 +99,8 @@ def check(config: AgentConfig, settings: Settings) -> None:
         value = getattr(config, name)
         if not low <= value <= high:
             raise ConfigRefused(f"{name} must be between {low} and {high} seconds")
+    if config.lease_renewal_interval >= config.lease_length:
+        raise ConfigRefused("lease_renewal_interval must be shorter than lease_length")
     if config.tunnel_url:
         portal = urlsplit(settings.public_origin)
         url = urlsplit(config.tunnel_url)
