@@ -39,8 +39,6 @@ from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.context import PortalContext
 from sp_rtk_portal.db import Database
-from sp_rtk_portal.doorbell import routes as doorbell_routes
-from sp_rtk_portal.doorbell.bell import Doorbell
 from sp_rtk_portal.mail import Mailer
 from sp_rtk_portal.proxy.middleware import BaseProxy
 from sp_rtk_portal.ratelimit import Limiter
@@ -67,7 +65,6 @@ def create_app(
     clock = clock or SystemClock()
     check_networks(settings.trusted_proxies)  # a typo fails at startup
     db = Database(settings.database_url)
-    tunnels = TunnelBroker(settings, clock, db)
     ctx = PortalContext(
         settings=settings,
         clock=clock,
@@ -78,9 +75,8 @@ def create_app(
         account_events=AccountEvents(),
         base_events=BaseEvents(),
         agent_proofs=ReplayCache(),
-        tunnels=tunnels,
+        tunnels=TunnelBroker(settings, clock, db),
         mailer=Mailer(settings),
-        doorbell=Doorbell(clock, tunnels),
         limits=Limiter(clock),
         copies=CopyWatch(),
     )
@@ -126,7 +122,6 @@ def create_app(
     app.include_router(settings_routes.router)
     app.include_router(tunnel_routes.router)
     app.include_router(share_routes.router)
-    app.include_router(doorbell_routes.router)
     app.include_router(audit_routes.router)
     return app
 

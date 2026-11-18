@@ -35,9 +35,8 @@
         {% if card.update %}· <span class="info" data-field="update">sp-rtk-base {{ card.update }} available</span>{% endif %}
       </dd>
       {% endif %}
-      <dt>Wake</dt>
-      <dd><span data-field="wake-mode">{% if base.doorbell == "ok" %}Doorbell{% else %}Polling every {{ card.poll_interval }} s{% if base.metered %} (metered){% endif %}{% endif %}</span>
-        · <span data-field="doorbell">Doorbell: {{ base.doorbell }}</span></dd>
+      <dt>Connection</dt>
+      <dd data-field="connection">Polling every {{ card.poll_interval }} s{% if base.metered %} (metered){% endif %}</dd>
       {% if base.lan_addresses %}
       <dt>LAN</dt>
       <dd><ul class="lan">

@@ -23,7 +23,6 @@ from sp_rtk_portal.config import Settings
 from sp_rtk_portal.web.security import ACTION_HEADER
 
 from .clock import FakeClock
-from .doorbell_server import DOORBELL_TOKEN
 from .fake_authentik import FakeAuthentik
 from .fake_smtp import FakeSmtp
 
@@ -65,7 +64,6 @@ def test_settings(
         smtp_port=smtp.port if smtp else 587,
         smtp_starttls=False,
         smtp_from="Portal <portal@example.com>",
-        doorbell_token=DOORBELL_TOKEN,
         trusted_proxies=TRUSTED_PROXIES,
     )
 

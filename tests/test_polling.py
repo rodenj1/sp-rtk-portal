@@ -118,7 +118,7 @@ async def test_metered_switches_the_poll_interval_and_the_offline_threshold(
     assert status.metered
     assert status.poll_interval == 60
     card = await _card(operator, agent)
-    assert card["wake-mode"] == ["Polling every 60 s (metered)"]
+    assert card["connection"] == ["Polling every 60 s (metered)"]
 
     await agent.run(seconds=60)
     last_poll = _seen(await _card(operator, agent))
@@ -164,8 +164,7 @@ async def test_check_in_data_and_the_public_ip_show_on_the_base(
     assert card["version"] == [f"sp-rtk-base {base_version}"]
     assert card["lan"] == ["192.168.1.20 (eth0, primary)", "10.8.0.4 (wlan0)"]
     assert card["public-ip"] == [agent.ip]
-    assert card["wake-mode"] == ["Polling every 20 s"]
-    assert card["doorbell"] == ["Doorbell: off"]
+    assert card["connection"] == ["Polling every 20 s"]
     assert card["protocol"] == [f"Protocol {PROTOCOL_VERSION}"]
 
 
@@ -181,14 +180,13 @@ async def test_a_later_check_in_updates_the_lan_addresses_and_public_ip(
     assert card["public-ip"] == ["198.51.100.99"]
 
 
-async def test_the_local_page_shows_last_contact_and_wake_mode(
+async def test_the_local_page_shows_last_contact_and_the_poll_interval(
     portal: Portal, agent: RunningAgent
 ):
     await agent.run(seconds=50)
 
     status = await agent.status()
     assert status.last_contact == portal.clock.now() - timedelta(seconds=10)
-    assert status.wake_mode == "polling"
     assert status.poll_interval == 20
 
 
@@ -242,8 +240,6 @@ async def test_the_owner_edits_the_config_on_the_portal(portal: Portal, owner: B
         poll_interval="25",
         metered_poll_interval="90",
         check_in_interval="600",
-        doorbell_host="bell.example.net",
-        doorbell_port="4500",
         tunnel_url="wss://sp-rtk-base.big-spray.com/agent/tunnel",
         tunnel_idle_timeout="300",
         tunnel_hard_cap="7200",
@@ -252,7 +248,7 @@ async def test_the_owner_edits_the_config_on_the_portal(portal: Portal, owner: B
     page = fields((await owner.get("/settings")).text)
     assert page["config-revision"] == ["2"]
     assert page["config-poll_interval"] == ["25"]
-    assert page["config-doorbell_host"] == ["bell.example.net"]
+    assert page["config-tunnel_hard_cap"] == ["7200"]
 
 
 @pytest.mark.parametrize(
@@ -261,8 +257,6 @@ async def test_the_owner_edits_the_config_on_the_portal(portal: Portal, owner: B
         {"poll_interval": "1"},
         {"tunnel_url": "wss://elsewhere.example.com/agent/tunnel"},
         {"tunnel_url": "ws://sp-rtk-base.big-spray.com/agent/tunnel"},
-        {"doorbell_host": "bell.example.net"},  # no port
-        {"doorbell_port": "70000", "doorbell_host": "bell.example.net"},
     ],
 )
 async def test_the_portal_refuses_a_config_the_agent_would_ignore(
@@ -304,26 +298,40 @@ async def test_a_tunnel_url_on_another_host_is_ignored_and_logged(
     assert "wss://evil.example.com/agent/tunnel" in caplog.text
 
 
-async def test_a_doorbell_host_resolving_to_a_private_address_is_ignored(
-    portal: Portal, agent: RunningAgent, owner: Browser, operator: Browser, caplog
+async def test_a_config_naming_a_doorbell_host_from_an_older_portal_still_applies(
+    portal: Portal, agent: RunningAgent, owner: Browser
 ):
-    agent.dns.records["bell.example.net"] = ["93.184.215.14"]
-    await _config(owner, doorbell_host="bell.example.net", doorbell_port="4500")
-    await agent.run(minutes=5, seconds=20)
-    card = await _card(operator, agent)
-    assert card["doorbell"] == ["Doorbell: unavailable"]
-    assert card["wake-mode"] == ["Polling every 20 s"]
+    # A block saved before the Doorbell was dropped (ADR 0006): its Doorbell
+    # host and port are ignored, the rest applies.
+    await portal.query(
+        "INSERT INTO agent_config (revision, config, created_at) VALUES (2, %s, %s)",
+        '{"revision": 2, "poll_interval": 30, "doorbell_host": "bell.example.net",'
+        ' "doorbell_port": 4500}',
+        portal.clock.now(),
+    )
+    await agent.run(seconds=20)
 
-    # Later the name is pointed into the base's LAN: caught at the next use.
-    agent.dns.records["bell.example.net"] = ["192.168.1.1"]
-    with caplog.at_level(logging.WARNING):
-        await agent.run(minutes=5)
+    status = await agent.status()
+    assert status.config_revision == 2
+    assert status.poll_interval == 30
+    page = fields((await owner.get("/settings")).text)
+    assert page["config-revision"] == ["2"]
+    assert page["config-poll_interval"] == ["30"]
+    assert not [name for name in page if "doorbell" in name]
 
-    card = await _card(operator, agent)
-    assert card["doorbell"] == ["Doorbell: ignored"]
-    assert card["wake-mode"] == ["Polling every 20 s"]
-    assert (await agent.status()).doorbell == "ignored"
-    assert "bell.example.net" in caplog.text and "192.168.1.1" in caplog.text
+    # An older agent persisted its block with the Doorbell too.
+    saved = agent.state_dir / "agent_config.json"
+    saved.write_text(
+        saved.read_text().replace(
+            '"revision": 2,', '"revision": 2, "doorbell_host": "bell.example.net",'
+        )
+    )
+    assert "doorbell_host" in saved.read_text()
+    agent.reachable = False
+    await agent.restart()
+    status = await agent.status()
+    assert status.config_revision == 2
+    assert status.poll_interval == 30
 
 
 # --- Notices and versions ---------------------------------------------------------

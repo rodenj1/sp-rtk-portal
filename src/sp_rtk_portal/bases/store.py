@@ -25,7 +25,6 @@ class BaseSummary:
     lan_addresses: list[dict[str, Any]] = field(default_factory=list)
     """``{address, interface, primary}`` from the latest Check-in."""
     public_ip: str | None = None
-    doorbell: str = "off"
     needs_upgrade: bool = False
     possible_copy_at: datetime | None = None
     """When its key was first seen polling from two places (ticket #98)."""
@@ -38,7 +37,7 @@ class BaseSummary:
 
 _COLUMNS = (
     "id, name, software_version, last_seen_at, protocol_version, metered,"
-    " polled_metered, lan_addresses, host(public_ip) AS public_ip, doorbell,"
+    " polled_metered, lan_addresses, host(public_ip) AS public_ip,"
     " needs_upgrade, remote_paused, possible_copy_at,"
     " coalesce(possible_copy_ips, '{}') AS possible_copy_ips"
 )

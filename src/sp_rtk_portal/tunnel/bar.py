@@ -5,8 +5,8 @@ status channel (``/bases/<id>/session``).
 "reason": <why it ended> | None, "frame": "/b/<id>/s/<token>/" (until it
 ends), "still_there": bool, "cap_at": ISO time the hard cap pauses it,
 "present": [{"name", "role"}] (other users with a Session bar open on this
-base), "last_seen": "YYYY-MM-DD HH:MM UTC" | "never", "wake_mode": "Doorbell"
-| "Polling every 20 s" ...}``.
+base), "last_seen": "YYYY-MM-DD HH:MM UTC" | "never", "wake_mode": "Polling every 20 s"
+| "Polling every 60 s (metered)"}``.
 
 An ended session with reason ``hard_cap`` is shown as Session paused.
 """
