@@ -129,6 +129,7 @@ END_REASONS: dict[str, str] = {
     EndReason.LOG_OUT_EVERYWHERE: "logged out everywhere",
     EndReason.ACCOUNT_DELETED: "account deleted",
     EndReason.PAUSED: "remote access paused on the base",
+    EndReason.LEASE_EXPIRED: "lease expired",
 }
 TRIGGERS = {
     "button": "",
