@@ -2051,7 +2051,7 @@ wheels = [
 
 [[package]]
 name = "sp-rtk-base"
-version = "0.10.0"
+version = "0.14.3"
 source = { editable = "../sp-rtk-base" }
 dependencies = [
     { name = "fastapi" },
@@ -2066,6 +2066,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "sp-rtk-base-relay" },
     { name = "sp-rtk-portal-protocol" },
+    { name = "typing-extensions" },
     { name = "uvicorn" },
     { name = "websockets" },
 ]
@@ -2082,8 +2083,9 @@ requires-dist = [
     { name = "pyserial", specifier = ">=3.5" },
     { name = "pyubx2", specifier = ">=1.2.43" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "sp-rtk-base-relay", specifier = ">=4.1.0,<5" },
-    { name = "sp-rtk-portal-protocol", specifier = ">=0.9.0,<1" },
+    { name = "sp-rtk-base-relay", specifier = ">=4.2.3,<5" },
+    { name = "sp-rtk-portal-protocol", editable = "protocol" },
+    { name = "typing-extensions", specifier = ">=4.12" },
     { name = "uvicorn", specifier = ">=0.42.0" },
     { name = "websockets", specifier = ">=14" },
 ]
@@ -2101,13 +2103,15 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=1.2.0" },
     { name = "pytest-cov", specifier = ">=7.0.0" },
     { name = "pytest-playwright", specifier = ">=0.8.0" },
+    { name = "pytest-randomly", specifier = ">=5.0.0" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.6.0" },
     { name = "types-pyyaml" },
 ]
 
 [[package]]
 name = "sp-rtk-base-relay"
-version = "4.1.0"
+version = "4.2.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dbus-fast" },
@@ -2115,9 +2119,9 @@ dependencies = [
     { name = "pyserial" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d0/f9/ace6e41d6caeb51ee05834321747ce3922c804547d5bf18a3b28b79b4ece/sp_rtk_base_relay-4.1.0.tar.gz", hash = "sha256:fd676a995ea2cebbc7764c1e9f408fc156bc6179e10c96c6f71d075fd3033d5e", size = 118150, upload-time = "2026-10-06T20:12:10.448Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/ca/df246ff08f0a663b0af8a3104ffa2ea5369e3c01181b374512d079f9d470/sp_rtk_base_relay-4.2.3.tar.gz", hash = "sha256:5a77ca522245c7c0c0aa24e783303ba7e4b777e56b82d0dc9341f15c582d53d0", size = 125564, upload-time = "2026-11-18T20:59:29.18Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/1b/b5/7fd5f20d0063a8ab0cb291c7aab02657fbe8b92e716a0d738c001c91f95c/sp_rtk_base_relay-4.1.0-py3-none-any.whl", hash = "sha256:01e157c4c74e6b0786640e8ba3a8fd83f86adda463225d919c834f47a8f1a24d", size = 132585, upload-time = "2026-10-06T20:12:08.948Z" },
+    { url = "https://files.pythonhosted.org/packages/4d/28/09268e5d70bd705848dbc46eaf926873eecc719048492728b991728092a0/sp_rtk_base_relay-4.2.3-py3-none-any.whl", hash = "sha256:10ff06a1d2bf08d46a08e20ff7fe191124a2798ff864fe026e518987b7a5c5ef", size = 137510, upload-time = "2026-11-18T20:59:27.568Z" },
 ]
 
 [[package]]
