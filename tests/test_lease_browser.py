@@ -74,7 +74,9 @@ def renewals(page: Page) -> list[str]:
     def channel(ws: WebSocket) -> None:
         ws.on(
             "framesent",
-            lambda payload: sent.append(str(payload)) if "renew" in str(payload) else None,
+            lambda payload: (
+                sent.append(str(payload)) if "renew" in str(payload) else None
+            ),
         )
 
     page.on("websocket", channel)
@@ -86,9 +88,11 @@ def opens(page: Page, base_id: str) -> list[Request]:
     posted: list[Request] = []
     page.on(
         "request",
-        lambda r: posted.append(r)
-        if r.method == "POST" and r.url.endswith(f"/bases/{base_id}/remote")
-        else None,
+        lambda r: (
+            posted.append(r)
+            if r.method == "POST" and r.url.endswith(f"/bases/{base_id}/remote")
+            else None
+        ),
     )
     return posted
 
