@@ -76,10 +76,15 @@ def free_socket() -> socket.socket:
 
 @asynccontextmanager
 async def serving(
-    app: Any, sock: socket.socket | None = None, *, tls: TlsFiles | None = None
+    app: Any,
+    sock: socket.socket | None = None,
+    *,
+    tls: TlsFiles | None = None,
+    timeout_keep_alive: int = 5,
 ) -> AsyncIterator[int]:
     """Serve ``app`` until the block ends; yields the port. ``tls``: serve
-    HTTPS (see ``localhost_tls``)."""
+    HTTPS (see ``localhost_tls``). ``timeout_keep_alive``: uvicorn's, in
+    real seconds."""
     sock = sock or free_socket()
     port = int(sock.getsockname()[1])
     server = uvicorn.Server(
@@ -90,6 +95,7 @@ async def serving(
             ws="websockets-sansio",
             ssl_certfile=tls.cert if tls else None,
             ssl_keyfile=tls.key if tls else None,
+            timeout_keep_alive=timeout_keep_alive,
         )
     )
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]
