@@ -18,6 +18,14 @@ All of it is process-local state (the Portal is a single instance, ADR
   leaving, logging out, account deletion) or :meth:`TunnelBroker.end_for_base`
   (Un-claim, pause). Ending always revokes the token at once; the tunnel
   closes with the base's last Remote session.
+- **Lease.** A path token works only until its lease expires (ADR 0005):
+  starting or rejoining the session, opening a status channel and
+  :meth:`TunnelBroker.renew` each give it a fresh lease. The broker asks the
+  session's open Session bars to renew (:meth:`TunnelBroker.renewal_due`)
+  every renewal interval on its own clock, so a hidden tab's throttled
+  timers don't matter; a bar that stops answering lets the lease expire,
+  which ends the session (:attr:`EndReason.LEASE_EXPIRED`). An ended
+  (paused) session is never renewed.
 
 Ending and the caller's transaction: callers end Remote sessions *inside*
 their own transaction (an Un-claim, a Share removal, a log out...), before
@@ -28,7 +36,7 @@ leaves a base whose Remote sessions ended, with the record saying why, and
 its users open it again. The record never waits on a caller, and a row is
 open exactly while its session is live (``remote_session_live_idx``).
 
-Idle timeout and hard cap come from the agent config current when the
+Idle timeout, hard cap and lease come from the agent config current when the
 session started.
 
 What a Session bar shows (:meth:`TunnelBroker.state`) follows the base's
@@ -101,6 +109,12 @@ class RemoteSession:
     end_reason: EndReason | None = None
     warned: bool = False
     """Its bars were told Still there? (until Keep going)."""
+    lease: timedelta = timedelta(minutes=5)
+    lease_renewal: timedelta = timedelta(minutes=1)
+    lease_expires_at: datetime | None = None
+    """The path token is refused from then on (set at start)."""
+    renewal_asked_at: datetime | None = None
+    """When its bars were last asked to renew (since the last renewal)."""
 
 
 SessionState = Literal["waking", "reconnecting", "didnt_wake", "connected", "ended"]
@@ -321,9 +335,12 @@ class TunnelBroker:
                 hard_cap=timedelta(seconds=config.tunnel_hard_cap),
                 ip=ip,
                 left_at=now,
+                lease=timedelta(seconds=config.lease_length),
+                lease_renewal=timedelta(seconds=config.lease_renewal_interval),
             )
             self._sessions[session.id] = session
             log.info("Remote session %s started on base %s", session.id, base_id)
+        self.renew(session)
         if not self.tunnel_up(base_id):
             attempt = self._attempts.get(base_id)
             if attempt is None or attempt.deadline <= self._clock.now():
@@ -351,7 +368,27 @@ class TunnelBroker:
         for session in self._sessions.values():
             if hmac.compare_digest(session.token, token) and session.base_id == base_id:
                 found = session
+        if found is not None and self._lease_expired(found):
+            return None  # the sweep ends it
         return found
+
+    def renew(self, session: RemoteSession) -> None:
+        """A fresh lease for the session's path token (not once it ended)."""
+        if session.ended:
+            return
+        session.lease_expires_at = self._clock.now() + session.lease
+        session.renewal_asked_at = None
+
+    def renewal_due(self, session: RemoteSession) -> bool:
+        """Its Session bars should renew the lease now."""
+        if session.ended or session.lease_expires_at is None:
+            return False
+        renewed_at = session.lease_expires_at - session.lease
+        return self._clock.now() >= renewed_at + session.lease_renewal
+
+    def _lease_expired(self, session: RemoteSession) -> bool:
+        expires = session.lease_expires_at
+        return expires is not None and self._clock.now() >= expires
 
     def touch(self, session: RemoteSession) -> None:
         """Record activity (a proxied request)."""
@@ -397,6 +434,7 @@ class TunnelBroker:
         """A Session bar's status channel is open on ``session``."""
         session.attendants += 1
         session.left_at = None
+        self.renew(session)
         if ip:
             session.ip = ip
         if session.attendants == 1:
@@ -490,13 +528,19 @@ class TunnelBroker:
     # --- timeouts ------------------------------------------------------------
 
     async def sweep(self) -> None:
-        """End Remote sessions past their idle timeout or hard cap, and tell
-        Session bars when a Wake went unanswered or the hard cap is near."""
+        """End Remote sessions past their idle timeout, hard cap or lease, and
+        tell Session bars when a Wake went unanswered, the hard cap is near or
+        the lease is due for renewal."""
         now = self._clock.now()
         for session in list(self._sessions.values()):
             if now - session.started_at >= session.hard_cap:
                 await self._end(session, EndReason.HARD_CAP)
                 continue
+            if self._lease_expired(session):
+                await self._end(session, EndReason.LEASE_EXPIRED)
+                continue
+            if self._ask_renewal(session, now):
+                await self._changed(session.base_id)
             if not session.warned and self.still_there(session):
                 session.warned = True
                 await self._changed(session.base_id)
@@ -513,6 +557,17 @@ class TunnelBroker:
             if not attempt.overdue and attempt.deadline <= now:
                 attempt.overdue = True
                 await self._changed(base_id)
+
+    def _ask_renewal(self, session: RemoteSession, now: datetime) -> bool:
+        """Time to ask the session's open bars to renew (once per renewal
+        interval while they don't)."""
+        if session.attendants == 0 or not self.renewal_due(session):
+            return False
+        asked = session.renewal_asked_at
+        if asked is not None and now - asked < session.lease_renewal:
+            return False
+        session.renewal_asked_at = now
+        return True
 
     async def _sweep_forever(self) -> None:
         while True:

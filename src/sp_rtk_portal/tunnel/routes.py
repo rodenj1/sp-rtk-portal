@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 
 from fastapi import APIRouter, Depends, Request, WebSocket
@@ -26,6 +27,7 @@ from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.bases import local, online, store
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.tunnel import bar
+from sp_rtk_portal.tunnel.broker import RemoteSession
 from sp_rtk_portal.web.client_ip import client_ip, rate_key
 from sp_rtk_portal.web.templates import render
 
@@ -143,7 +145,8 @@ async def session_bar(
 async def session_channel(base_id: str, websocket: WebSocket) -> None:
     """The Session bar's status channel. While one is open, its user is
     present on the Remote session; each change is sent as one
-    :func:`sp_rtk_portal.tunnel.bar.status` message."""
+    :func:`sp_rtk_portal.tunnel.bar.status` message. The bar sends only
+    ``{"type": "renew"}`` (renew the lease), answered with a fresh status."""
     ctx: PortalContext = websocket.app.state.portal
     account = await websocket_account(websocket, ctx)
     session = None
@@ -154,37 +157,60 @@ async def session_channel(base_id: str, websocket: WebSocket) -> None:
         return
     broker = ctx.tunnels
     await websocket.accept()
-    receiver = asyncio.ensure_future(_until_closed(websocket))
+    renewed: asyncio.Queue[None] = asyncio.Queue()
+    receiver = asyncio.ensure_future(_receive(websocket, ctx, session, renewed))
     try:
         async with broker.attend(session, client_ip(websocket)):
             seen = -1
+            answer = False
             while True:
                 version = broker.version(base_id)
-                if version != seen:
-                    seen = version
+                if version != seen or answer:
+                    seen, answer = version, False
                     await websocket.send_json(await bar.status(ctx, session))
                 if session.ended:
                     await websocket.close()
                     return
                 waiter = asyncio.ensure_future(broker.wait_change(base_id, seen))
+                renewal = asyncio.ensure_future(renewed.get())
                 done, _ = await asyncio.wait(
-                    {receiver, waiter}, return_when=asyncio.FIRST_COMPLETED
+                    {receiver, waiter, renewal}, return_when=asyncio.FIRST_COMPLETED
                 )
+                waiter.cancel()
+                renewal.cancel()
                 if receiver in done:
-                    waiter.cancel()
                     return
+                answer = renewal in done
     except (WebSocketDisconnect, RuntimeError):
         return
     finally:
         receiver.cancel()
 
 
-async def _until_closed(websocket: WebSocket) -> None:
+async def _receive(
+    websocket: WebSocket,
+    ctx: PortalContext,
+    session: RemoteSession,
+    renewed: asyncio.Queue[None],
+) -> None:
+    """Read the bar's messages until it closes: each renewal renews the
+    lease (unless the session ended) and asks for a status in answer."""
     with contextlib.suppress(WebSocketDisconnect, RuntimeError):
         while True:
             message = await websocket.receive()
             if message["type"] == "websocket.disconnect":
                 return
+            if _is_renewal(message.get("text")):
+                ctx.tunnels.renew(session)
+                renewed.put_nowait(None)
+
+
+def _is_renewal(text: str | None) -> bool:
+    try:
+        body = json.loads(text or "")
+    except ValueError:
+        return False
+    return isinstance(body, dict) and body.get("type") == "renew"
 
 
 # --- The agent's end of the tunnel ------------------------------------------------

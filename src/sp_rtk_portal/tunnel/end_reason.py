@@ -27,3 +27,6 @@ class EndReason(StrEnum):
     """The account was deleted (also a Share's removal reason then)."""
     PAUSED = "paused"
     """Remote access was paused on the base."""
+    LEASE_EXPIRED = "lease_expired"
+    """Its Session bar stopped renewing the path token's lease (closed,
+    asleep, or its status channel died). The bar reconnects once."""
