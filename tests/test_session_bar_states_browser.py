@@ -5,7 +5,9 @@ Portal decides every state, so the browser only shows what the status
 channel tells it: "after 35 s" means exactly 35 s of virtual time passed.
 
 The base here polls (protocol version 1 agent) unless a test asks for one
-holding its tunnel.
+holding its tunnel (fixture ``h``): the bar opens at once, says Didn't wake
+after 15 s with no answer, and waits up to 75 s for a dropped tunnel (the
+agent's first retry comes after a random 0-60 s).
 """
 
 from __future__ import annotations
@@ -112,6 +114,60 @@ async def w(
         yield it
 
 
+@pytest.fixture
+async def h(
+    database_url: str,
+    clock: FakeClock,
+    authentik: FakeAuthentik,
+    browser_app: Browser,
+) -> AsyncIterator[World]:
+    """A base holding its tunnel."""
+    async with world(
+        database_url, clock, authentik, browser_app, protocol_version=HOLDING_VERSION
+    ) as it:
+        await holding(it)
+        yield it
+
+
+async def holding(w: World) -> None:
+    """Let the agent's reconnects run until it holds its tunnel again."""
+    tunnels = w.portal.context.tunnels
+    for _ in range(60):
+        if tunnels.tunnel_up(w.base_id):
+            return
+        await w.agent.run(seconds=10)
+        await asyncio.sleep(0.05)
+    raise AssertionError("the base never held its tunnel")
+
+
+async def dropped(w: World) -> None:
+    """The network drops the held tunnel; the Portal notices."""
+    w.agent.drop_tunnel()
+    tunnels = w.portal.context.tunnels
+    await eventually(lambda: not tunnels.tunnel_up(w.base_id), "the tunnel dropped")
+
+
+async def record_states(page: Page) -> None:
+    """From the next page load on, ``window.seenStates`` lists every state
+    the bar showed, in order."""
+    await page.add_init_script(
+        """
+        window.seenStates = [];
+        document.addEventListener("DOMContentLoaded", () => {
+          const bar = document.querySelector("[data-session-bar]");
+          if (!bar) return;
+          const note = () => window.seenStates.push(bar.dataset.state);
+          note();
+          new MutationObserver(note).observe(bar, { attributeFilter: ["data-state"] });
+        });
+        """
+    )
+
+
+async def seen_states(page: Page) -> list[str]:
+    return await page.evaluate("window.seenStates")
+
+
 async def frame_text(w: World, page: Page | None = None) -> None:
     base = (page or w.page).frame_locator("iframe[data-field=frame]")
     await expect(base.get_by_text("base page /")).to_be_visible()
@@ -125,6 +181,8 @@ async def test_didnt_wake_after_35_s_with_retry_and_offline_looks_different(w: W
     w.agent.reachable = False  # its polls stop arriving
     await w.open_remotely()
     await expect(w.locate("status")).to_have_text("Waking North field…")
+    await expect(w.locate("hint-polling")).to_contain_text("every 20 s")
+    await expect(w.locate("hint-holding")).to_be_hidden()
     await w.agent.run(seconds=34)
     await asyncio.sleep(0.2)
     await expect(w.locate("status")).to_have_text("Waking North field…")
@@ -135,7 +193,7 @@ async def test_didnt_wake_after_35_s_with_retry_and_offline_looks_different(w: W
     await expect(didnt).to_be_visible()
     await expect(didnt).to_contain_text("North field didn't wake")
     await expect(w.locate("last-seen")).to_have_text("2026-01-01 12:00 UTC")
-    await expect(w.locate("wake-mode")).to_have_text("Polling every 20 s")
+    await expect(w.locate("connection")).to_have_text("Polling every 20 s")
     await expect(didnt.locator("[data-field=open-locally]")).to_have_attribute(
         "href", "http://192.168.1.20:8080/"
     )
@@ -176,6 +234,77 @@ async def test_didnt_wake_after_35_s_with_retry_and_offline_looks_different(w: W
     await w.connected()
 
 
+# --- A base holding its tunnel ---------------------------------------------------------
+
+
+async def test_a_holding_base_opens_at_once_without_waking(h: World):
+    await record_states(h.page)
+    await h.open_remotely()
+
+    await expect(h.locate("status")).to_have_text("Connected")  # no time passed
+    await frame_text(h)
+    assert "waking" not in await seen_states(h.page)
+
+
+async def test_a_holding_base_that_doesnt_answer_shows_didnt_wake_after_15_s(h: World):
+    page = h.page
+    h.agent.reachable = False
+    await dropped(h)  # still online for 2 min: it may come back any moment
+    await record_states(page)
+    await h.open_remotely()
+
+    await expect(h.locate("status")).to_have_text("Connecting to North field…")
+    await expect(h.locate("progress")).to_be_visible()
+    await expect(h.locate("hint-holding")).to_be_visible()
+    await expect(h.locate("hint-polling")).to_be_hidden()
+    await h.agent.run(seconds=14)
+    await asyncio.sleep(0.2)
+    await expect(h.locate("status")).to_have_text("Connecting to North field…")
+
+    await h.agent.run(seconds=1)
+    await expect(h.locate("status")).to_have_text("Didn't wake")
+    await expect(h.locate("didnt-wake")).to_contain_text("North field didn't wake")
+    await expect(h.locate("connection")).to_have_text("Reconnecting its tunnel")
+    assert "waking" not in await seen_states(page)
+
+    # It comes back by itself, and the bar connects with no Retry.
+    h.agent.reachable = True
+    await holding(h)
+    await expect(h.locate("status")).to_have_text("Connected")
+    await frame_text(h)
+
+
+async def test_a_dropped_held_tunnel_shows_reconnecting_for_up_to_75_s(h: World):
+    page = h.page
+    await h.open_remotely()
+    await h.connected()
+    await frame_text(h)
+    path = await h.locate("frame").get_attribute("data-path")
+
+    # Back within the agent's random first retry (0-60 s): same session.
+    await dropped(h)
+    await expect(h.locate("status")).to_have_text("Reconnecting…")
+    await expect(h.locate("progress")).to_be_visible()
+    await expect(h.locate("hint-holding")).to_be_visible()
+    await expect(h.locate("hint-polling")).to_be_hidden()
+    await h.agent.run(seconds=60)
+    await expect(h.locate("status")).to_have_text("Connected")
+    await expect(h.locate("frame")).to_have_attribute("data-path", path or "")
+    await frame_text(h)
+    assert page.url == f"{h.origin}/bases/{h.base_id}"
+
+    # Not back: Reconnecting for 75 s, then Didn't wake.
+    h.agent.reachable = False
+    await dropped(h)
+    await expect(h.locate("status")).to_have_text("Reconnecting…")
+    await h.agent.run(seconds=74)
+    await asyncio.sleep(0.2)
+    await expect(h.locate("status")).to_have_text("Reconnecting…")
+    await h.agent.run(seconds=1)
+    await expect(h.locate("status")).to_have_text("Didn't wake")
+    await expect(h.locate("didnt-wake")).to_be_visible()
+
+
 # --- Reconnecting -------------------------------------------------------------------
 
 
@@ -189,6 +318,8 @@ async def test_a_dropped_tunnel_reconnects_once_then_shows_didnt_wake(w: World):
     w.agent.drop_tunnel()
     await expect(w.locate("status")).to_have_text("Reconnecting…")
     await expect(w.locate("progress")).to_be_visible()
+    await expect(w.locate("hint-polling")).to_be_visible()
+    await expect(w.locate("hint-holding")).to_be_hidden()
     await w.agent.run(seconds=20)  # the Portal's own re-Wake
     await expect(w.locate("status")).to_have_text("Connected")
     await expect(w.locate("frame")).to_have_attribute("data-path", path or "")

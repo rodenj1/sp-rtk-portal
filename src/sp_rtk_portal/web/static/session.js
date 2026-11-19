@@ -6,7 +6,9 @@
 // never talk to this page (no postMessage).
 //
 // The Portal decides every state (its clock, not the browser's); this script
-// only shows them. A state is shown by the elements whose data-show lists it.
+// only shows them. A state is shown by the elements whose data-show lists it;
+// elements with data-holds show only while the base holds its tunnel
+// ("true": it comes back by itself) or only while it polls ("false": Wakes).
 //
 // Lease (ADR 0005): the frame's path token lives only while this bar renews
 // it. The Portal asks for a renewal every 60 s (a status message with
@@ -69,6 +71,14 @@
     bar.querySelectorAll("[data-show]").forEach((el) => {
       el.hidden = !el.dataset.show.split(" ").includes(view);
     });
+    holds(bar.dataset.holds);
+  }
+
+  function holds(value) {
+    bar.dataset.holds = value;
+    bar.querySelectorAll("[data-holds]").forEach((el) => {
+      if (el !== bar) el.hidden = el.dataset.holds !== value;
+    });
   }
 
   function presence(others) {
@@ -91,7 +101,8 @@
     if (view !== "connected" || stillThere) fullScreen(false);
     presence(msg.state === "ended" ? [] : msg.present || []);
     if (msg.last_seen) field("last-seen").textContent = msg.last_seen;
-    if (msg.wake_mode) field("wake-mode").textContent = msg.wake_mode;
+    if (msg.connection) field("connection").textContent = msg.connection;
+    if (typeof msg.holds === "boolean") holds(String(msg.holds));
   }
 
   // No Remote session (yet): nothing to follow.

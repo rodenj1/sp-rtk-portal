@@ -5,8 +5,9 @@
 {#- One block per state, shown by its data-show (session.js keeps them in step
     with the status channel). The labels come from tunnel.bar.labels, here and
     for session.js (data-labels); a new state adds its label there and its
-    own block here. -#}
-<section class="session-bar" data-session-bar data-base="{{ base.id }}" data-name="{{ base.name }}" data-state="{{ state }}" data-labels="{{ labels | tojson | forceescape }}">
+    own block here. Elements with data-holds show only for a base that holds
+    its tunnel ("true") or only for one that polls ("false"). -#}
+<section class="session-bar" data-session-bar data-base="{{ base.id }}" data-name="{{ base.name }}" data-state="{{ state }}" data-holds="{{ holds | lower }}" data-labels="{{ labels | tojson | forceescape }}">
   <div class="bar-head">
     <a href="/" data-field="back">&larr; Your bases</a>
     <span class="name" data-field="name">{{ base.name }}</span>
@@ -15,13 +16,19 @@
     <button type="button" class="fullscreen" data-field="fullscreen" data-show="connected" {% if state != "connected" %}hidden{% endif %}>Full screen</button>
   </div>
   <p class="presence" data-field="presence" hidden></p>
-  <div data-show="waking reconnecting" {% if state not in ("waking", "reconnecting") %}hidden{% endif %}>
+  <div data-show="waking connecting reconnecting" {% if state not in ("waking", "connecting", "reconnecting") %}hidden{% endif %}>
     <progress data-field="progress"></progress>
-    <p class="hint" data-field="hint">{{ base.name }} checks for requests every {{ poll_interval }} s, so this can take up to {{ poll_interval }} s.</p>
-    <p class="hint" data-show="reconnecting" {% if state != "reconnecting" %}hidden{% endif %}>The connection to {{ base.name }} dropped. Waking it once more.</p>
+    <div data-field="hint-polling" data-holds="false" {% if holds %}hidden{% endif %}>
+      <p class="hint">{{ base.name }} checks for requests every {{ poll_interval }} s, so this can take up to {{ poll_interval }} s.</p>
+      <p class="hint" data-show="reconnecting" {% if state != "reconnecting" %}hidden{% endif %}>The connection to {{ base.name }} dropped. Waking it once more.</p>
+    </div>
+    <div data-field="hint-holding" data-holds="true" {% if not holds %}hidden{% endif %}>
+      <p class="hint" data-show="connecting" {% if state != "connecting" %}hidden{% endif %}>{{ base.name }} keeps a connection open to the Portal, but it isn't up right now. Waiting a few seconds for it to come back.</p>
+      <p class="hint" data-show="reconnecting" {% if state != "reconnecting" %}hidden{% endif %}>The connection to {{ base.name }} dropped. It reconnects by itself, usually within a minute.</p>
+    </div>
   </div>
   <div class="trouble didnt-wake" data-field="didnt-wake" data-show="didnt_wake" {% if state != "didnt_wake" %}hidden{% endif %}>
-    <p>{{ base.name }} didn't wake. Last seen <span data-field="last-seen">{{ last_seen }}</span> · Wake mode: <span data-field="wake-mode">{{ wake_mode }}</span></p>
+    <p>{{ base.name }} didn't wake. Last seen <span data-field="last-seen">{{ last_seen }}</span> · Connection: <span data-field="connection">{{ connection }}</span></p>
     <form data-action="/bases/{{ base.id }}/remote">
       <button type="submit" data-field="retry">Retry</button>
     </form>
