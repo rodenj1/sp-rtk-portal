@@ -68,7 +68,9 @@ base is never Woken: Open remotely finds its tunnel up (**connected** at
 once) or else is **connecting** until it comes back, for
 :data:`WAKE_GRACE`; after a drop it's **reconnecting** for
 :data:`HELD_RECONNECT`, since it comes back by itself. Either way an
-unanswered attempt ends in **didnt_wake**. Retry (Open remotely again)
+unanswered attempt ends in **didnt_wake**. So does a Remote session whose
+first request down an open tunnel the base's UI leaves unanswered for
+:data:`WAKE_GRACE` (:meth:`TunnelBroker.asking`), until an answer comes. Retry (Open remotely again)
 starts a new attempt. **Still there?** (:meth:`TunnelBroker.still_there`) comes
 :attr:`Settings.still_there_warning` before the hard cap;
 :meth:`TunnelBroker.keep_going` restarts the hard cap.
@@ -118,8 +120,9 @@ TOKEN_BYTES = 32
 
 WAKE_GRACE = timedelta(seconds=15)
 """How much longer than one poll interval a Wake may take before the bar says
-Didn't wake (35 s, or 75 s metered, with the default intervals), and how
-long a holding base whose tunnel isn't up may take to answer Open remotely."""
+Didn't wake (35 s, or 75 s metered, with the default intervals), how long
+a holding base whose tunnel isn't up may take to answer Open remotely, and
+how long a base's UI may leave a request down its open tunnel unanswered."""
 
 
 HELD_RECONNECT = timedelta(seconds=75)
@@ -179,6 +182,9 @@ class RemoteSession:
     """The path token is refused from then on (set at start)."""
     renewal_asked_at: datetime | None = None
     """When its bars were last asked to renew (since the last renewal)."""
+    answered: bool = False
+    """The base's UI answered a request in it: from then on a slow answer
+    isn't Didn't wake."""
 
 
 SessionState = Literal[
@@ -195,6 +201,19 @@ class _Attempt:
 
     kind: AttemptKind
     deadline: datetime
+    overdue: bool = False
+    """Its bars were told Didn't wake."""
+
+
+@dataclass
+class _Unanswered:
+    """Requests in a Remote session that its base's UI hasn't answered, up
+    to its first answer."""
+
+    since: datetime
+    """When the first of them went down the tunnel (or Retry started
+    over)."""
+    requests: int = 0
     overdue: bool = False
     """Its bars were told Didn't wake."""
 
@@ -243,6 +262,8 @@ class TunnelBroker:
         self._sessions: dict[int, RemoteSession] = {}
         self._bases: dict[str, _Base] = {}
         self._attempts: dict[str, _Attempt] = {}
+        self._unanswered: dict[int, _Unanswered] = {}
+        """By Remote session id."""
         self._ends: dict[str, list[RemoteSession]] = {}
         self._stopping = False
         self._sweeper: asyncio.Task[None] | None = None
@@ -320,6 +341,45 @@ class TunnelBroker:
             return await attached.tunnel.open_stream()
         except TunnelClosed as exc:
             raise TunnelDown(base_id) from exc
+
+    @contextlib.asynccontextmanager
+    async def asking(
+        self, session: RemoteSession
+    ) -> AsyncIterator[Callable[[], Awaitable[None]]]:
+        """A request in ``session`` is on its way to the base's UI down its
+        tunnel, until the block ends; await the function it gives once the UI
+        answers. Until the session's first answer, a request left unanswered
+        for :data:`WAKE_GRACE` makes its Session bars say Didn't wake."""
+        waiting = None
+        if not session.answered:
+            waiting = self._unanswered.setdefault(
+                session.id, _Unanswered(self._clock.now())
+            )
+            waiting.requests += 1
+
+        async def answered() -> None:
+            session.answered = True
+            await self._forget_unanswered(session, waiting)
+
+        try:
+            yield answered
+        finally:
+            if waiting is not None:
+                waiting.requests -= 1
+                if not waiting.requests:  # given up on, or cut short
+                    await self._forget_unanswered(session, waiting)
+
+    async def _forget_unanswered(
+        self, session: RemoteSession, waiting: _Unanswered | None
+    ) -> None:
+        if waiting is not None and self._unanswered.get(session.id) is waiting:
+            del self._unanswered[session.id]
+            if waiting.overdue:
+                await self._changed(session.base_id)
+
+    def _unanswered_overdue(self, session: RemoteSession) -> bool:
+        waiting = self._unanswered.get(session.id)
+        return waiting is not None and self._clock.now() - waiting.since >= WAKE_GRACE
 
     async def serve_tunnel(
         self,
@@ -528,6 +588,9 @@ class TunnelBroker:
             attempt = self._attempts.get(base_id)
             if attempt is None or attempt.deadline <= self._clock.now():
                 await self._attempt(base_id, opening=True)  # first, or Retry
+        elif self._unanswered_overdue(session):
+            waiting = self._unanswered[session.id]  # Retry: wait for it again
+            waiting.since, waiting.overdue = self._clock.now(), False
         await self._changed(base_id)
         return session
 
@@ -603,6 +666,8 @@ class TunnelBroker:
         if session.ended:
             return "ended"
         if self.tunnel_up(session.base_id):
+            if self._unanswered_overdue(session):
+                return "didnt_wake"
             return "connected"
         attempt = self._attempts.get(session.base_id)
         if attempt is None:
@@ -717,6 +782,7 @@ class TunnelBroker:
         session.ended, session.end_reason = True, reason
         session.ended_at = self._clock.now()
         del self._sessions[session.id]
+        self._unanswered.pop(session.id, None)
         self._ends.setdefault(session.base_id, []).append(session)
         async with self._db.connection() as conn:
             await store.ended(
@@ -783,6 +849,11 @@ class TunnelBroker:
             if not attempt.overdue and attempt.deadline <= now:
                 attempt.overdue = True
                 await self._changed(base_id)
+        for session in list(self._sessions.values()):
+            waiting = self._unanswered.get(session.id)
+            if waiting and not waiting.overdue and self._unanswered_overdue(session):
+                waiting.overdue = True
+                await self._changed(session.base_id)
 
     def _ask_renewal(self, session: RemoteSession, now: datetime) -> bool:
         """Time to ask the session's open bars to renew (once per renewal

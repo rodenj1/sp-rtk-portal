@@ -5,7 +5,8 @@ A few paths answer like a misbehaving or ordinary base would, for the base
 proxy's tests: ``/missing`` is a 404, ``/redirect`` a 302 to its own
 ``http://localhost:8080/survey``, ``/set-cookie`` sets a cookie,
 ``/clear-site-data`` asks the browser to wipe the origin's cookies and
-storage. Every answer also carries headers the proxy must override (its own CSP,
+storage. With ``answering`` off it takes every HTTP request and answers
+none, until turned back on (a base whose UI hangs). Every answer also carries headers the proxy must override (its own CSP,
 ``X-Frame-Options``, ``Access-Control-Allow-Origin``, ``Referrer-Policy``).
 
 The real agent is told this stub's port (its ``app_port``, a test-only
@@ -15,6 +16,7 @@ the :8080 stub and nothing else" is checked against what it saw.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -48,6 +50,8 @@ class BaseUi:
     def __init__(self) -> None:
         self.seen: list[Seen] = []
         self.port = 0
+        self._answering = asyncio.Event()
+        self._answering.set()
         self.app = Starlette(
             routes=[
                 WebSocketRoute("/ws", self._ws),
@@ -59,7 +63,21 @@ class BaseUi:
             ]
         )
 
+    @property
+    def answering(self) -> bool:
+        return self._answering.is_set()
+
+    @answering.setter
+    def answering(self, value: bool) -> None:
+        """Off: HTTP requests wait unanswered; on again: they get their
+        answers."""
+        if value:
+            self._answering.set()
+        else:
+            self._answering.clear()
+
     async def _page(self, request: Request) -> Response:
+        await self._answering.wait()
         body = await request.body()
         self.seen.append(
             Seen(
@@ -108,4 +126,7 @@ async def base_ui() -> AsyncIterator[BaseUi]:
     ui = BaseUi()
     async with serving(ui.app) as port:
         ui.port = port
-        yield ui
+        try:
+            yield ui
+        finally:
+            ui.answering = True  # nothing left hanging at shutdown

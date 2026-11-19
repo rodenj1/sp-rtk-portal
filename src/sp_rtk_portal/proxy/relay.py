@@ -42,10 +42,11 @@ async def http(
     receive: Receive,
     send: Send,
     public_origin: str,
-    on_start: Callable[[], None],
+    on_start: Callable[[], Awaitable[None]],
 ) -> None:
-    """Relay one HTTP request. Raises :class:`BaseUnreachable` (before
-    anything was sent to the browser) when the base gave no answer."""
+    """Relay one HTTP request; ``on_start`` is awaited once the base's
+    answer starts. Raises :class:`BaseUnreachable` (before anything was sent
+    to the browser) when the base gave no answer."""
     conn = h11.Connection(h11.CLIENT)
     framing = [h for h in headers if h[0] in (b"content-length", b"transfer-encoding")]
     forwarded = rules.request_headers(headers, target.prefix, public_origin)
@@ -88,7 +89,7 @@ async def http(
     except h11.RemoteProtocolError as exc:
         raise BaseUnreachable(str(exc)) from exc
 
-    on_start()
+    await on_start()
     await send(
         {
             "type": "http.response.start",
