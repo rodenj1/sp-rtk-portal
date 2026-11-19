@@ -44,6 +44,7 @@ Configuration is read from the environment:
 | `PORTAL_WRONG_CODES_PER_ACCOUNT`, `PORTAL_WRONG_CODES_OVERALL` | Wrong approve codes an hour per account, default 10, and across all accounts, default 100. Past either, no code is looked up (also on `/claim?code=`) |
 | `PORTAL_SHARES_PER_OPERATOR` | Shares an hour per Operator, default 30 (each emails someone) |
 | `PORTAL_TUNNEL_REFUSALS_PER_IP` | Refused tunnel opens an hour per IP, default 30; past it, opens from that IP are refused unread |
+| `PORTAL_TUNNEL_OPENS_PER_SECOND` | Tunnel opens admitted per second from all bases, default 100; above it an open gets 503 with a random 10-60 s `Retry-After`, so a restart doesn't bring every base back at once |
 | `PORTAL_HOST`, `PORTAL_PORT`, `PORTAL_LOG_LEVEL` | Default `0.0.0.0`, `8000`, `INFO` |
 
 ```sh
