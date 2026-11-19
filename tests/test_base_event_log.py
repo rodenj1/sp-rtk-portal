@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
@@ -21,7 +20,7 @@ import pytest
 from .harness.agent import RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
 from .harness.portal import Browser, Portal
-from .harness.real_base import RealBase, real_base
+from .harness.real_base import RealBase, reading_agent
 from .harness.server import serving
 from .harness.session_bar import status_channel
 
@@ -51,22 +50,6 @@ async def server(portal: Portal) -> AsyncIterator[int]:
         yield port
 
 
-@asynccontextmanager
-async def _real_base(agent: RunningAgent) -> AsyncIterator[RealBase]:
-    """The real sp-rtk-base, reading this agent's control socket."""
-    cm = real_base(
-        extra_env={
-            "SP_RTK_BASE_PORTAL_AGENT_SOCKET": str(agent.sock),
-            "SP_RTK_BASE_PORTAL_AGENT_STATE": str(agent.state_dir),
-        }
-    )
-    base = await asyncio.to_thread(cm.__enter__)
-    try:
-        yield base
-    finally:
-        await asyncio.to_thread(cm.__exit__, None, None, None)
-
-
 @pytest.fixture
 async def base(
     portal: Portal, server: int
@@ -74,10 +57,8 @@ async def base(
     """The agent and the real base whose UI its tunnel reaches."""
     async with (
         running_agent(portal, server_port=server) as agent,
-        _real_base(agent) as ui,
+        reading_agent(agent) as ui,
     ):
-        agent.app_port = ui.port
-        await agent.restart()  # the tunnel now reaches the real UI
         yield agent, ui
 
 
