@@ -17,6 +17,7 @@ from typing import Any
 
 import httpx
 import pytest
+from sp_rtk_portal_protocol import PROTOCOL_VERSION
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
@@ -68,12 +69,21 @@ async def _real_base(agent: RunningAgent) -> AsyncIterator[RealBase]:
 
 
 @pytest.fixture
+def agent_version() -> int:
+    """The protocol version the agent speaks (a test may ask for 1: a
+    polling base, reached through Wakes)."""
+    return PROTOCOL_VERSION
+
+
+@pytest.fixture
 async def base(
-    portal: Portal, server: int
+    portal: Portal, server: int, agent_version: int
 ) -> AsyncIterator[tuple[RunningAgent, RealBase]]:
     """The agent and the real base whose UI its tunnel reaches."""
     async with (
-        running_agent(portal, server_port=server) as agent,
+        running_agent(
+            portal, server_port=server, protocol_version=agent_version
+        ) as agent,
         _real_base(agent) as ui,
     ):
         agent.app_port = ui.port
@@ -130,6 +140,7 @@ async def settle() -> None:
     await asyncio.sleep(0.1)
 
 
+@pytest.mark.parametrize("agent_version", [1])  # only a polling base is Woken
 async def test_a_wake_and_an_operators_remote_session_are_in_the_bases_event_log(
     portal: Portal,
     operator: Browser,

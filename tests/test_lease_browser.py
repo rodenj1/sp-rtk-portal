@@ -10,6 +10,7 @@ ended as lease expired and reconnects once, with a new path token.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import pytest
@@ -105,7 +106,9 @@ async def test_a_background_tab_with_throttled_timers_keeps_renewing(w: World):
     path = await w.locate("frame").get_attribute("data-path")
     assert path
 
-    await w.agent.run(minutes=12)
+    for _ in range(12):
+        await w.agent.run(minutes=1)
+        await asyncio.sleep(0.1)  # the Portal asks, the bar answers
 
     await expect(w.locate("status")).to_have_text("Connected")
     assert await w.locate("frame").get_attribute("data-path") == path

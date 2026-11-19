@@ -9,6 +9,7 @@ Time is virtual: the agent and the Portal share the fake clock.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from datetime import timedelta
 
@@ -47,7 +48,11 @@ async def agent(
     ui: BaseUi
     async with (
         base_ui() as ui,
-        running_agent(portal, server_port=server, app_port=ui.port) as a,
+        # A polling base (protocol version 1): its tunnel closes with the
+        # last Remote session, which these tests watch for.
+        running_agent(
+            portal, server_port=server, app_port=ui.port, protocol_version=1
+        ) as a,
     ):
         await a.claim(operator)
         yield a
@@ -62,7 +67,9 @@ async def test_a_renewed_token_keeps_working_and_is_refused_5_min_after_the_last
         await agent.run(seconds=20)
         frame = (await bar.until("connected"))["frame"]
 
-        await agent.run(minutes=12)  # renewed all along
+        for _ in range(12):  # renewed all along
+            await agent.run(minutes=1)
+            await asyncio.sleep(0.05)  # the Portal asks, the bar answers
         assert bar.renewals >= 10
         assert (await operator.get(frame, headers=FRAMED)).status_code == 200
 
