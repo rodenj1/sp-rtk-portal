@@ -20,8 +20,12 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import httpx
+
+if TYPE_CHECKING:
+    from .agent import RunningAgent
 
 
 @dataclass
@@ -198,6 +202,26 @@ def real_base(
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     proc.wait(5)
+
+
+@asynccontextmanager
+async def reading_agent(agent: RunningAgent) -> AsyncIterator[RealBase]:
+    """The real sp-rtk-base reading ``agent``'s control socket, as on a base
+    (its Event log and its "Remote session active" banner), and the agent
+    restarted so its tunnel reaches this UI."""
+    cm = real_base(
+        extra_env={
+            "SP_RTK_BASE_PORTAL_AGENT_SOCKET": str(agent.sock),
+            "SP_RTK_BASE_PORTAL_AGENT_STATE": str(agent.state_dir),
+        }
+    )
+    base = await asyncio.to_thread(cm.__enter__)
+    try:
+        agent.app_port = base.port
+        await agent.restart()
+        yield base
+    finally:
+        await asyncio.to_thread(cm.__exit__, None, None, None)
 
 
 def _wait_healthy(url: str, proc: subprocess.Popen[bytes], log: Path) -> None:
