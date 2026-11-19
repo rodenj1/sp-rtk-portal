@@ -17,8 +17,11 @@ its edges are wired to the harness:
   new ``PortalAgent`` over the same directory;
 - its tunnel (a real websocket) goes to the Portal served over TCP
   (``server_port``, see :mod:`.server`) whatever URL the agent asks for;
-  the URLs it asked for are in ``agent.tunnel_urls``. Its streams go to
-  ``app_port`` (the :mod:`.base_ui` stub) instead of ``:8080``.
+  the URLs it asked for are in ``agent.tunnel_urls``, and every frame it
+  sent or received in ``agent.frames``. Its streams go to ``app_port`` (the
+  :mod:`.base_ui` stub) instead of ``:8080``;
+- it speaks ``protocol_version`` (by default the current one, which holds
+  its tunnel; ``1`` plays an agent that only polls and answers Wakes).
 
 sp-rtk-base is a dev dependency by path (``../sp-rtk-base``, the sibling
 submodule in the rtk_development meta repo); see the README.
@@ -27,6 +30,7 @@ submodule in the rtk_development meta repo); see the README.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import tempfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
@@ -47,6 +51,7 @@ from sp_rtk_base.portal_agent.client import (
 from sp_rtk_base.portal_agent.control import PortalAgent, serve
 from sp_rtk_base.portal_agent.protocol import AgentStatus
 from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
+from sp_rtk_portal_protocol.tunnel import Kind
 from websockets.asyncio.client import connect as ws_connect
 
 from .agent_time import AgentTime
@@ -81,6 +86,60 @@ class CloudflareTransport(httpx.AsyncBaseTransport):
             )
         )
         return response
+
+
+class _Working(httpx.AsyncBaseTransport):
+    """Marks each of the agent's requests in flight (:meth:`AgentTime.working`)."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, time: AgentTime) -> None:
+        self._inner = inner
+        self._time = time
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        async with self._time.working():
+            response = await self._inner.handle_async_request(request)
+            await response.aread()
+            return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+@dataclass(frozen=True)
+class Framed:
+    """One tunnel frame, as the agent sent (``sent``) or received it."""
+
+    at: datetime
+    sent: bool
+    kind: Kind
+
+
+class _RecordedWebSocket:
+    """The agent's tunnel websocket, noting each frame in ``agent.frames``."""
+
+    def __init__(self, ws: Any, agent: RunningAgent) -> None:
+        self.ws = ws
+        self._agent = agent
+
+    def _note(self, message: bytes | str, sent: bool) -> None:
+        if isinstance(message, bytes) and message:
+            with contextlib.suppress(ValueError):
+                kind = Kind(message[0])
+                self._agent.frames.append(
+                    Framed(self._agent.portal.clock.now(), sent, kind)
+                )
+
+    async def send(self, message: bytes) -> None:
+        self._note(message, sent=True)
+        await self.ws.send(message)
+
+    async def recv(self) -> bytes | str:
+        message = await self.ws.recv()
+        self._note(message, sent=False)
+        return message
+
+    async def close(self) -> None:
+        await self.ws.close()
 
 
 @dataclass(frozen=True)
@@ -133,6 +192,7 @@ class RunningAgent:
         server_port: int | None = None,
         app_port: int | None = None,
         transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
+        protocol_version: int = PROTOCOL_VERSION,
     ) -> None:
         self.portal = portal
         self._transport = transport
@@ -140,13 +200,16 @@ class RunningAgent:
         self.app_port = app_port
         self.tunnel_urls: list[str] = []
         """Every tunnel URL the agent tried to open."""
+        self.frames: list[Framed] = []
+        """Every tunnel frame the agent sent or received, in order."""
         self.state_dir = state_dir
         self.sock = sock
         self.ip = ip
         self.time = AgentTime(portal.clock)
         self.lan: list[LanAddress] = list(LAN)
-        self.protocol_version = PROTOCOL_VERSION
-        """What the agent sends; raise it to "upgrade" sp-rtk-base."""
+        self.protocol_version = protocol_version
+        """What the agent speaks; change it, then ``restart()``, to play an
+        older or newer sp-rtk-base."""
         self.traffic = Traffic()
         self.requests: list[Sent] = []
         """Every request the agent sent, in order."""
@@ -165,11 +228,12 @@ class RunningAgent:
         self.tunnel_urls.append(url)
         if self.server_port is None or not self.reachable:
             raise OSError("no Portal served for the tunnel")
-        self._tunnel_ws = await ws_connect(
-            f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
-            additional_headers={**headers, "CF-Connecting-IP": self.ip},
-        )
-        return self._tunnel_ws
+        async with self.time.working():
+            self._tunnel_ws = await ws_connect(
+                f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
+                additional_headers={**headers, "CF-Connecting-IP": self.ip},
+            )
+        return _RecordedWebSocket(self._tunnel_ws, self)
 
     def drop_tunnel(self) -> None:
         """The network drops the base's tunnel (its TCP connection dies)."""
@@ -183,10 +247,11 @@ class RunningAgent:
         self._agent = PortalAgent(
             self.state_dir,
             portal_url=self.portal.origin,
-            transport=(
+            transport=_Working(
                 self._transport(self)
                 if self._transport is not None
-                else CloudflareTransport(self.portal.app, self.ip, self)
+                else CloudflareTransport(self.portal.app, self.ip, self),
+                self.time,
             ),
             now=self.portal.clock.now,
             sleep=self.time.sleep,
@@ -271,9 +336,11 @@ async def running_agent(
     server_port: int | None = None,
     app_port: int | None = None,
     transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
+    protocol_version: int = PROTOCOL_VERSION,
 ) -> AsyncIterator[RunningAgent]:
     """``transport``: what carries the agent's HTTPS (by default
-    :class:`CloudflareTransport`; see :mod:`.wire`)."""
+    :class:`CloudflareTransport`; see :mod:`.wire`). ``protocol_version``:
+    what the agent speaks (``1``: an agent that only polls)."""
     # AF_UNIX paths are capped near 108 bytes: keep the temp dir short.
     with tempfile.TemporaryDirectory(prefix="agent-") as d:
         agent = RunningAgent(
@@ -284,6 +351,7 @@ async def running_agent(
             server_port=server_port,
             app_port=app_port,
             transport=transport,
+            protocol_version=protocol_version,
         )
         await agent.start()
         try:

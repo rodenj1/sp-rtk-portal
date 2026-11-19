@@ -6,11 +6,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, Request, WebSocket
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 from sp_rtk_portal_protocol import (
+    HOLDING_VERSION,
     TUNNEL_PATH,
     VERSION_HEADER,
     ProofError,
@@ -190,21 +192,28 @@ async def _until_closed(websocket: WebSocket) -> None:
 # --- The agent's end of the tunnel ------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _Open:
+    base_id: str
+    held: bool
+    """Opened to hold (no nonce), not on a Wake."""
+
+
 @router.websocket(TUNNEL_PATH)
 async def agent_tunnel(websocket: WebSocket) -> None:
-    """A Woken agent opens its tunnel: a GET signed with its base key whose
-    proof echoes the Wake nonce. Anything else is refused (HTTP 403) before
-    the websocket is accepted."""
+    """An agent opens its tunnel: a GET signed with its base key. A Claimed
+    base on protocol version 2 or later signs it with no nonce, to hold it
+    open (ADR 0006); otherwise the proof echoes a Wake nonce. Anything else
+    is refused (HTTP 403) before the websocket is accepted."""
     ctx: PortalContext = websocket.app.state.portal
-    base_id = await _woken_base(websocket, ctx)
-    if base_id is None:
+    opened = await _admitted(websocket, ctx)
+    if opened is None:
         await websocket.close(code=POLICY_VIOLATION)
         return
-    await websocket.accept()
-    await ctx.tunnels.serve_tunnel(base_id, websocket)
+    await ctx.tunnels.serve_tunnel(opened.base_id, websocket, held=opened.held)
 
 
-async def _woken_base(websocket: WebSocket, ctx: PortalContext) -> str | None:
+async def _admitted(websocket: WebSocket, ctx: PortalContext) -> _Open | None:
     """The base whose agent may open this tunnel, or ``None`` (refused).
     Each refusal counts against the client IP; past
     ``tunnel_refusals_per_ip`` an hour, its opens are refused unread."""
@@ -214,15 +223,15 @@ async def _woken_base(websocket: WebSocket, ctx: PortalContext) -> str | None:
     if ctx.limits.over("tunnel-refused", rate_key(ip), **limit) is not None:
         log.info("refused a tunnel open from %s: too many refused", ip)
         return None
-    base_id = await _check_open(websocket, ctx, ip)
-    if base_id is None:
+    opened = await _check_open(websocket, ctx, ip)
+    if opened is None:
         ctx.limits.hit("tunnel-refused", rate_key(ip), period=s.rate_limit_period)
-    return base_id
+    return opened
 
 
 async def _check_open(
     websocket: WebSocket, ctx: PortalContext, ip: str | None
-) -> str | None:
+) -> _Open | None:
     now = ctx.clock.now()
     try:
         proof = verify_proof(
@@ -247,9 +256,20 @@ async def _check_open(
     if row is None:
         log.info("refused a tunnel open from %s: no base has this key", ip)
         return None
+    if proof.nonce is None:
+        if version < HOLDING_VERSION:
+            log.info(
+                "refused a tunnel open for base %s from %s: no Wake nonce, and"
+                " protocol %s doesn't hold its tunnel",
+                row["id"],
+                ip,
+                version,
+            )
+            return None
+        return _Open(str(row["id"]), held=True)
     if not ctx.tunnels.redeem(row["id"], proof.nonce):
         log.warning(
             "refused a tunnel open for base %s from %s: no such Wake", row["id"], ip
         )
         return None
-    return str(row["id"])
+    return _Open(str(row["id"]), held=False)

@@ -34,9 +34,12 @@ RANGES: dict[str, tuple[int, int]] = {
     "check_in_interval": (60, 86400),
     "tunnel_idle_timeout": (10, 86400),
     "tunnel_hard_cap": (60, 86400),
+    "ping_interval": (10, 600),
+    "tunnel_silence_timeout": (30, 3600),
 }
 """Seconds; the agent ignores a value outside these (sp-rtk-base
-``portal_agent.agent_config.RANGES``)."""
+``portal_agent.agent_config.RANGES``; it doesn't use the Remote session
+limits or the silence timeout, which only the Portal applies)."""
 
 
 class ConfigRefused(Exception):
@@ -89,6 +92,11 @@ def check(config: AgentConfig, settings: Settings) -> None:
         value = getattr(config, name)
         if not low <= value <= high:
             raise ConfigRefused(f"{name} must be between {low} and {high} seconds")
+    if config.ping_interval >= config.tunnel_silence_timeout:
+        raise ConfigRefused(
+            "ping_interval must be shorter than tunnel_silence_timeout, or the "
+            "Portal closes every held tunnel"
+        )
     if config.tunnel_url:
         portal = urlsplit(settings.public_origin)
         url = urlsplit(config.tunnel_url)

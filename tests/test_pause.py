@@ -56,6 +56,18 @@ async def agent(
         yield a
 
 
+@pytest.fixture
+async def polling_agent(
+    portal: Portal, operator: Browser, server: int, ui: BaseUi
+) -> AsyncIterator[RunningAgent]:
+    """An agent that only polls and answers Wakes (protocol version 1)."""
+    async with running_agent(
+        portal, server_port=server, app_port=ui.port, protocol_version=1
+    ) as a:
+        await a.claim(operator)
+        yield a
+
+
 async def base_of(agent: RunningAgent) -> str:
     base_id = (await agent.status()).base_id
     assert base_id
@@ -134,9 +146,10 @@ async def test_a_check_in_carries_the_pause_for_a_base_that_rarely_polls(
         assert (await card(operator, base_id))[0] == "online"
 
 
-async def test_a_paused_agent_opens_no_tunnel_for_a_wake_sent_anyway(
-    portal: Portal, operator: Browser, agent: RunningAgent
+async def test_a_paused_polling_agent_opens_no_tunnel_for_a_wake_sent_anyway(
+    portal: Portal, operator: Browser, polling_agent: RunningAgent
 ):
+    agent = polling_agent
     base_id = await base_of(agent)
     await agent.pause()
 

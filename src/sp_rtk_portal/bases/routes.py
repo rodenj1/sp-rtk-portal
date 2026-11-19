@@ -39,7 +39,7 @@ async def base_list(
             base=base,
             state=(state := online.state(base, config, now)),
             state_label=online.LABELS[state],
-            poll_interval=online.interval(config, base.metered),
+            connection=online.connection(base, config),
             update=latest
             if agent_config.update_available(base.software_version, latest)
             else None,
@@ -73,7 +73,8 @@ class BaseCard:
     base: store.BaseSummary
     state: online.State
     state_label: str
-    poll_interval: int
+    connection: str
+    """How the Portal reaches it, in words (holding, or polling every N s)."""
     update: str | None
     """A newer sp-rtk-base release, shown as information."""
     local_access: local.LocalAccess | None = None

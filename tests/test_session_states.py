@@ -5,6 +5,9 @@ Session paused, and who else is connected.
 The Portal is served over real TCP; the real agent runs on virtual time and
 the Portal's clock is fake, so every timeout is reached by letting exactly
 that much time pass.
+
+The agent here speaks protocol version 1 (a polling base, reached through
+Wakes).
 """
 
 from __future__ import annotations
@@ -54,7 +57,9 @@ async def ui() -> AsyncIterator[BaseUi]:
 async def agent(
     portal: Portal, operator: Browser, server: int, ui: BaseUi
 ) -> AsyncIterator[RunningAgent]:
-    async with running_agent(portal, server_port=server, app_port=ui.port) as a:
+    async with running_agent(
+        portal, server_port=server, app_port=ui.port, protocol_version=1
+    ) as a:
         await a.claim(operator)
         yield a
 

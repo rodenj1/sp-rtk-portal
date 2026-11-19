@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import pytest
 from sp_rtk_base import __version__ as base_version
-from sp_rtk_portal_protocol import BaseKey
+from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
@@ -61,7 +61,7 @@ async def test_the_agent_pairs_and_the_portal_holds_only_its_public_key(
     [account] = await portal.query("SELECT id FROM account WHERE email = %s", EMAIL)
     assert base["owner_account_id"] == account["id"]
     assert base["software_version"] == base_version
-    assert base["protocol_version"] == 1
+    assert base["protocol_version"] == PROTOCOL_VERSION
     # The Portal holds the agent's public key, and only that.
     key = BaseKey.from_pem((agent.state_dir / "base_key.pem").read_bytes())
     assert base["public_key"] == key.public_jwk

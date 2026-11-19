@@ -36,7 +36,7 @@
       </dd>
       {% endif %}
       <dt>Connection</dt>
-      <dd data-field="connection">Polling every {{ card.poll_interval }} s{% if base.metered %} (metered){% endif %}</dd>
+      <dd data-field="connection">{{ card.connection }}</dd>
       {% if base.lan_addresses %}
       <dt>LAN</dt>
       <dd><ul class="lan">

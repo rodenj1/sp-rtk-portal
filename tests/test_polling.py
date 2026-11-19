@@ -256,6 +256,8 @@ async def test_the_owner_edits_the_config_on_the_portal(portal: Portal, owner: B
     "values",
     [
         {"poll_interval": "1"},
+        {"ping_interval": "5"},
+        {"ping_interval": "120", "tunnel_silence_timeout": "120"},
         {"tunnel_url": "wss://elsewhere.example.com/agent/tunnel"},
         {"tunnel_url": "ws://sp-rtk-base.big-spray.com/agent/tunnel"},
     ],

@@ -3,6 +3,9 @@
 The Portal's clock is fake and the agent runs on virtual time, and the
 Portal decides every state, so the browser only shows what the status
 channel tells it: "after 35 s" means exactly 35 s of virtual time passed.
+
+The base here polls (protocol version 1 agent) unless a test asks for one
+holding its tunnel.
 """
 
 from __future__ import annotations
@@ -14,6 +17,7 @@ from dataclasses import dataclass
 
 import pytest
 from playwright.async_api import Browser, Locator, Page, async_playwright, expect
+from sp_rtk_portal_protocol import HOLDING_VERSION
 
 from .harness.agent import RunningAgent, running_agent
 from .harness.base_ui import base_ui
@@ -55,14 +59,21 @@ class World:
         await page.wait_for_url(f"{self.origin}/bases/{self.base_id}")
 
     async def connected(self, page: Page | None = None) -> None:
-        await expect(self.locate("status", page)).to_have_text("Waking North field…")
-        await self.agent.run(seconds=20)  # the Wake's poll
+        if self.agent.protocol_version < HOLDING_VERSION:
+            status = self.locate("status", page)
+            await expect(status).to_have_text("Waking North field…")
+            await self.agent.run(seconds=20)  # the Wake's poll
         await expect(self.locate("status", page)).to_have_text("Connected")
 
 
 @asynccontextmanager
 async def world(
-    database_url: str, clock: FakeClock, authentik: FakeAuthentik, app: Browser
+    database_url: str,
+    clock: FakeClock,
+    authentik: FakeAuthentik,
+    app: Browser,
+    *,
+    protocol_version: int = 1,
 ) -> AsyncIterator[World]:
     sock = free_socket()
     origin = f"http://localhost:{sock.getsockname()[1]}"
@@ -71,7 +82,12 @@ async def world(
         base_ui() as ui,
         running_portal(database_url, clock, authentik, origin=origin) as portal,
         serving(portal.app, sock) as port,
-        running_agent(portal, server_port=port, app_port=ui.port) as agent,
+        running_agent(
+            portal,
+            server_port=port,
+            app_port=ui.port,
+            protocol_version=protocol_version,
+        ) as agent,
     ):
         context = await app.new_context(viewport={"width": 1200, "height": 900})
         page = await context.new_page()

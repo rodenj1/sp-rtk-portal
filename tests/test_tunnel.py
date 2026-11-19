@@ -1,6 +1,9 @@
-"""Seam 1: "Open remotely" Wakes the base, the real agent opens its tunnel
-through the Portal, and streams reach the base's UI and nothing else
+"""Seam 1: "Open remotely" Wakes a polling base, the real agent opens its
+tunnel through the Portal, and streams reach the base's UI and nothing else
 (ticket #88).
+
+The agent here speaks protocol version 1: it only polls, and opens its
+tunnel on a Wake (``test_held_tunnel.py`` has bases holding theirs).
 
 The Portal is served over real TCP (websockets); the agent runs on virtual
 time, so a Wake is picked up exactly when its next poll would go out. The
@@ -17,7 +20,6 @@ from datetime import timedelta
 
 import pytest
 from sp_rtk_portal_protocol import (
-    PROTOCOL_VERSION,
     VERSION_HEADER,
     BaseKey,
     Stream,
@@ -73,7 +75,9 @@ async def ui() -> AsyncIterator[BaseUi]:
 async def agent(
     portal: Portal, operator: Browser, server: int, ui: BaseUi
 ) -> AsyncIterator[RunningAgent]:
-    async with running_agent(portal, server_port=server, app_port=ui.port) as a:
+    async with running_agent(
+        portal, server_port=server, app_port=ui.port, protocol_version=1
+    ) as a:
         await a.claim(operator)
         yield a
 
@@ -208,7 +212,7 @@ async def hand_open(
     nonce: str | None,
     ip: str | None = None,
 ) -> object:
-    headers = {VERSION_HEADER: str(PROTOCOL_VERSION)}
+    headers = {VERSION_HEADER: "1"}  # as the polling agent here
     if ip is not None:
         headers["CF-Connecting-IP"] = ip
     if key is not None:
@@ -374,14 +378,11 @@ async def test_two_remote_sessions_share_one_tunnel_which_closes_2_min_after_the
     await wait_tunnel(agent, "closed")
     assert not tunnels.tunnel_up(base_id)
 
-    # It reopens on the next Wake. (Earlier opens may include the agent's
-    # own idle backstop: no frame here keeps a stream open, so it closed the
-    # tunnel and the Portal re-Woke the base.)
-    opened = len(agent.tunnel_urls)
+    # It reopens on the next Wake.
     await open_remotely(operator, base_id)
     await agent.run(seconds=20)
     await wait_tunnel(agent, "open")
-    assert agent.tunnel_urls == [TUNNEL_URL] * (opened + 1)
+    assert agent.tunnel_urls == [TUNNEL_URL] * 2
 
 
 async def test_a_users_tabs_share_one_remote_session(

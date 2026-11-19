@@ -4,8 +4,11 @@ clock, and only the test moves that clock on.
 ``run(seconds=60)`` lets a minute pass, waking each sleep on the way (so the
 agent polls exactly when it would have); ``step()`` jumps to the next sleep.
 After waking a sleep it waits (in real time) until that task sleeps again or
-ends, so the requests it makes have landed before the test looks and nothing
-lags behind virtual time.
+ends, and until nothing the agent started is still in flight (its requests
+and tunnel opens are marked with :meth:`AgentTime.working`), so the requests
+it makes have landed before the test looks and nothing lags behind virtual
+time. The agent runs more than one task (its beat, its tunnel's pings), and
+one may still be talking to the Portal when another's sleep ends.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import itertools
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -33,6 +37,17 @@ class AgentTime:
         self.clock = clock
         self._sleepers: list[_Sleeper] = []
         self._seq = itertools.count()
+        self._busy = 0
+
+    @contextlib.asynccontextmanager
+    async def working(self) -> AsyncIterator[None]:
+        """The agent is talking to the Portal (a request, a tunnel open):
+        time doesn't move on until it's done."""
+        self._busy += 1
+        try:
+            yield
+        finally:
+            self._busy -= 1
 
     async def sleep(self, seconds: float) -> None:
         sleeper = _Sleeper(
@@ -64,6 +79,8 @@ class AgentTime:
         give_up = loop.time() + 10
         while loop.time() < give_up:
             await asyncio.sleep(0.001)
+            if self._busy:
+                continue
             if task is None or task.done():
                 return
             if any(s.task is task and s.seq > after for s in self._sleepers):
@@ -74,9 +91,11 @@ class AgentTime:
         a Claim, the poll loop has made its first requests."""
         loop = asyncio.get_running_loop()
         give_up = loop.time() + 10
+        quiet = 0
         while loop.time() < give_up:
             await asyncio.sleep(0.001)
-            if self._next() is not None:
+            quiet = quiet + 1 if self._next() is not None and not self._busy else 0
+            if quiet >= 3:  # and stays so: another task may be about to start
                 return
         raise AssertionError("the agent never went to sleep")
 
