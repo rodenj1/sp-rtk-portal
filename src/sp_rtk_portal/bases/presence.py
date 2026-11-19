@@ -9,7 +9,9 @@ version.
 The base's connection mode (``holding``, ``reconnecting``, ``polling``)
 follows its tunnel: :func:`tunnel_held` when it opens a held tunnel,
 :func:`tunnel_dropped` when that closes. A poll or Check-in from an agent
-that doesn't hold its tunnel (protocol version 1) makes it ``polling``.
+that doesn't hold its tunnel (protocol version 1) makes it ``polling``, and
+so does a Check-in from a version 2 agent that says it fell back to polling
+(ticket #209) until its tunnel is held again.
 """
 
 from __future__ import annotations
@@ -117,7 +119,9 @@ async def checked_in(
         " public_ip = coalesce(%(ip)s::inet, public_ip),"
         " needs_upgrade = false, polled_metered = metered,"
         " software_version = %(software)s, lan_addresses = %(lan)s,"
-        f" remote_paused = coalesce(%(paused)s, remote_paused), {_MODE_ON_POLL}"
+        " remote_paused = coalesce(%(paused)s, remote_paused),"
+        " connection_mode = CASE WHEN %(version)s < %(holding)s"
+        " OR %(mode)s = 'polling' THEN 'polling' ELSE connection_mode END"
         " FROM (SELECT id AS old_id, remote_paused AS was_paused FROM base"
         "       WHERE key_thumbprint = %(thumbprint)s FOR UPDATE) AS old"
         " WHERE base.id = old.old_id"
@@ -131,6 +135,7 @@ async def checked_in(
             "software": check_in.software_version,
             "lan": json.dumps([a.to_json() for a in check_in.lan_addresses]),
             "paused": check_in.paused,
+            "mode": check_in.mode,
             "thumbprint": thumbprint,
         },
     )
