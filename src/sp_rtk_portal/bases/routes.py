@@ -74,7 +74,9 @@ class BaseCard:
     state: online.State
     state_label: str
     connection: str
-    """How the Portal reaches it, in words (holding, or polling every N s)."""
+    """How the Portal reaches it (its connection mode), in words: holding,
+    reconnecting, or polling every N s. Shown next to its online state while
+    it's online."""
     update: str | None
     """A newer sp-rtk-base release, shown as information."""
     local_access: local.LocalAccess | None = None
