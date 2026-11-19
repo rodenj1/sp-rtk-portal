@@ -123,9 +123,18 @@ def gaps(dropped: Dropped, attempts: list[TunnelAttempt]) -> list[float]:
     return [(b - a).total_seconds() for a, b in itertools.pairwise(times)]
 
 
-async def set_config(owner: Browser, **values: object) -> None:
+async def set_config(owner: Browser, agent: RunningAgent, **values: object) -> None:
+    """Save the agent config and wait until the holding agent applies it."""
+    before = (await agent.status()).config_revision
     resp = await owner.action("/settings/agent-config", values)
     assert resp.status_code == 200, resp.text
+
+    async def applied() -> bool:
+        # Pushed on its tunnel in real time, which virtual time doesn't wait
+        # for: a drop before it lands loses it until the next tunnel open.
+        return (await agent.status()).config_revision != before
+
+    await eventually(applied, "the agent applies the new config")
 
 
 def admit(portal: Portal, per_second: int) -> None:
@@ -181,12 +190,7 @@ async def test_a_tunnel_that_opens_resets_the_backoff(
 async def test_the_backoff_cap_comes_from_the_agent_config(
     portal: Portal, agent: RunningAgent, owner: Browser
 ):
-    await set_config(owner, reconnect_backoff_cap="60")
-
-    async def applied() -> bool:  # pushed on its tunnel, in real time
-        return (await agent.status()).config_revision == 2
-
-    await eventually(applied, "the agent applies the new config")
+    await set_config(owner, agent, reconnect_backoff_cap="60")
 
     agent.reachable = False
     dropped = await drop(agent)
@@ -204,7 +208,7 @@ async def test_a_503_with_retry_after_delays_the_next_attempt_at_least_that_long
     portal: Portal, agent: RunningAgent, owner: Browser
 ):
     # A 1 min cap: without Retry-After most waits would be shorter than it.
-    await set_config(owner, reconnect_backoff_cap="60")
+    await set_config(owner, agent, reconnect_backoff_cap="60")
     await agent.run(seconds=20)
     admit(portal, 0)  # the Portal admits no tunnel opens at all
 

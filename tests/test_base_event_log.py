@@ -222,7 +222,7 @@ async def test_the_hard_cap_and_a_pause_are_the_recorded_reasons(
         # Meanwhile the agent's idle backstop closes the frameless tunnel
         # and the Portal re-Wakes it, every few minutes: older entries leave
         # the Event log (it keeps the latest 50).
-        await agent.run(minutes=60)
+        await bar.run(agent, minutes=60)
         await bar.until("ended")
         await agent.run(seconds=20)
         await until_logged(ui, 1, "portal.remote_session_ended")

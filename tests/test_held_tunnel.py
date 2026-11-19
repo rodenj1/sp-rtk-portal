@@ -192,7 +192,7 @@ async def test_idle_close_and_hard_cap_end_each_remote_session_not_the_tunnel(
     await open_remotely(operator, base_id)
     async with status_channel(server, operator, base_id) as bar:
         await bar.until("connected")
-        await agent.run(minutes=60)
+        await bar.run(agent, minutes=60)
         ended = await bar.until("ended")
     assert ended["reason"] == "hard_cap"
 

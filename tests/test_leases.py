@@ -9,7 +9,6 @@ Time is virtual: the agent and the Portal share the fake clock.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from datetime import timedelta
 
@@ -67,9 +66,7 @@ async def test_a_renewed_token_keeps_working_and_is_refused_5_min_after_the_last
         await agent.run(seconds=20)
         frame = (await bar.until("connected"))["frame"]
 
-        for _ in range(12):  # renewed all along
-            await agent.run(minutes=1)
-            await asyncio.sleep(0.05)  # the Portal asks, the bar answers
+        await bar.run(agent, minutes=12)  # renewed all along
         assert bar.renewals >= 10
         assert (await operator.get(frame, headers=FRAMED)).status_code == 200
 
@@ -126,7 +123,7 @@ async def test_a_paused_remote_session_is_not_renewed(
     async with status_channel(server, operator, base_id) as bar:
         await agent.run(seconds=20)
         frame = (await bar.until("connected"))["frame"]
-        await agent.run(minutes=60)  # the hard cap pauses it
+        await bar.run(agent, minutes=60)  # the hard cap pauses it
         paused = await bar.until("ended")
         assert paused["reason"] == "hard_cap"
         asked = [m for m in bar.messages if m.get("renew")]
@@ -168,7 +165,7 @@ async def test_the_portal_owner_sets_the_lease_in_the_agent_config(
     async with status_channel(server, operator, base_id) as bar:
         await agent.run(seconds=20)
         await bar.until("connected")
-        await agent.run(seconds=40)
+        await bar.run(agent, seconds=40)
         assert bar.renewals >= 1  # asked every 30 s
 
         bar.renewing = False
