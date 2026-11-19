@@ -38,6 +38,7 @@ RANGES: dict[str, tuple[int, int]] = {
     "tunnel_silence_timeout": (30, 3600),
     "lease_length": (60, 3600),
     "lease_renewal_interval": (10, 600),
+    "reconnect_backoff_cap": (60, 3600),
 }
 """Seconds; the agent ignores a value outside these (sp-rtk-base
 ``portal_agent.agent_config.RANGES``; it doesn't use the Remote session

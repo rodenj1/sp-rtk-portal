@@ -219,6 +219,9 @@ class AgentConfig(Message):
     last renewed it (Session bar only: the agent ignores it)."""
     lease_renewal_interval: int = 60
     """How often the Session bar renews the lease (Session bar only)."""
+    reconnect_backoff_cap: int = 600
+    """The longest an agent waits between tries to open its tunnel again
+    after a drop (it backs off up to this, with jitter)."""
 
 
 @dataclass(frozen=True)
