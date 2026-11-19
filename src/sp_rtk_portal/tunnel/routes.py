@@ -269,6 +269,7 @@ async def agent_tunnel(websocket: WebSocket) -> None:
                 protocol_version=opened.version,
                 ip=ip,
                 msg=msg,
+                on_tunnel=True,
             )
         except AgentRefused as exc:
             log.info("ignored a Check-in on base %s's tunnel: %s", opened.base_id, exc)

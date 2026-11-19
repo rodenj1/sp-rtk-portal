@@ -17,7 +17,7 @@ so does a Check-in from a version 2 agent that says it fell back to polling
 from __future__ import annotations
 
 import json
-from dataclasses import KW_ONLY, dataclass
+from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
 
 from sp_rtk_portal_protocol import HOLDING_VERSION, CheckIn
@@ -44,18 +44,32 @@ class Seen:
 @dataclass(frozen=True)
 class Pace:
     """What sets how often a base may poll: the metered flag, and the one
-    its agent last heard (it polls at that until its next reply)."""
+    its agent last heard (it polls at that until its next reply); and what
+    its last Check-in said, to tell a Check-in with news from a repeat."""
 
     base_id: str
     owner_account_id: int
     metered: bool
     polled_metered: bool
+    remote_paused: bool = False
+    software_version: str = ""
+    lan_addresses: list[dict[str, object]] = field(default_factory=list)
+
+    def news_in(self, check_in: CheckIn) -> bool:
+        """``check_in`` changes what the Portal knows: a pause or resume, a
+        new software version or new LAN addresses."""
+        return (
+            (check_in.paused is not None and check_in.paused != self.remote_paused)
+            or check_in.software_version != self.software_version
+            or [a.to_json() for a in check_in.lan_addresses] != self.lan_addresses
+        )
 
 
 async def pace(conn: Connection, thumbprint: str) -> Pace | None:
     """The base with this key (``None``: no such base)."""
     cur = await conn.execute(
-        "SELECT id AS base_id, owner_account_id, metered, polled_metered"
+        "SELECT id AS base_id, owner_account_id, metered, polled_metered,"
+        " remote_paused, software_version, lan_addresses"
         " FROM base WHERE key_thumbprint = %s",
         (thumbprint,),
     )

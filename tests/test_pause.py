@@ -318,6 +318,24 @@ async def test_resuming_reenables_open_remotely_on_the_same_tunnel(
     assert agent.tunnel_urls == [TUNNEL_URL]
 
 
+async def test_quick_pauses_and_resumes_on_the_tunnel_all_reach_the_portal(
+    portal: Portal, operator: Browser, agent: RunningAgent
+):
+    """Each change goes in a Check-in on the held tunnel, and the Portal
+    takes every one that changes something, however close together: none
+    is lost to the Check-in pacing (ticket #207)."""
+    base_id = await held(portal, agent)
+
+    async def shown(state: str) -> bool:
+        return (await card(operator, base_id))[0] == state
+
+    for _ in range(4):
+        await agent.pause()
+        await eventually(lambda: shown("paused"), "the Portal shows it paused")
+        await agent.resume()
+        await eventually(lambda: shown("online"), "the Portal shows it resumed")
+
+
 async def test_the_agent_learns_who_is_connected_remotely_and_since_when(
     portal: Portal, operator: Browser, agent: RunningAgent
 ):
