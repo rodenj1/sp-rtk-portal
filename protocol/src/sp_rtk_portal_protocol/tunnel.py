@@ -55,6 +55,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from sp_rtk_portal_protocol.messages import Message, MessageError, read_control
+
 logger = logging.getLogger(__name__)
 
 MAX_DATA = 64 * 1024
@@ -68,6 +70,17 @@ _HEADER = struct.Struct("!BI")
 
 class FrameError(Exception):
     """A frame that must close the tunnel. The message says why (for logs)."""
+
+
+def read_control_frame(payload: bytes) -> Message | None:
+    """A ``CONTROL`` frame's message, as :func:`~.messages.read_control`
+    reads it (``None`` for a type this side doesn't know), for an
+    ``on_control``: one that isn't a message is a :class:`FrameError`, so the
+    receiver closes the tunnel as for a bad frame."""
+    try:
+        return read_control(payload)
+    except MessageError as exc:
+        raise FrameError(str(exc)) from None
 
 
 class StreamClosed(Exception):
