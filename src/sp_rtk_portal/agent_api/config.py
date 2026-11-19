@@ -39,8 +39,10 @@ RANGES: dict[str, tuple[int, int]] = {
     "lease_length": (60, 3600),
     "lease_renewal_interval": (10, 600),
     "reconnect_backoff_cap": (60, 3600),
+    "fallback_failures": (1, 100),
+    "fallback_retry_interval": (60, 86400),
 }
-"""Seconds; the agent ignores a value outside these (sp-rtk-base
+"""Seconds (``fallback_failures`` is a count); the agent ignores a value outside these (sp-rtk-base
 ``portal_agent.agent_config.RANGES``; it doesn't use the Remote session
 limits or the silence timeout, which only the Portal applies). The lease
 ones are the Session bar's alone: the agent has no range for them."""

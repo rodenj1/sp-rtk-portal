@@ -223,6 +223,12 @@ class AgentConfig(Message):
     reconnect_backoff_cap: int = 600
     """The longest an agent waits between tries to open its tunnel again
     after a drop (it backs off up to this, with jitter)."""
+    fallback_failures: int = 3
+    """Tunnel opens failed in a row (while HTTPS gets through) after which
+    the agent falls back to polling (a count, not seconds)."""
+    fallback_retry_interval: int = 900
+    """How often an agent that fell back to polling tries its tunnel
+    again."""
 
 
 @dataclass(frozen=True)
