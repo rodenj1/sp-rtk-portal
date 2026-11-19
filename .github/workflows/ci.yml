@@ -138,6 +138,10 @@ jobs:
     # supports it.
     runs-on: ubuntu-24.04
     needs: lint
+    # A full run takes about 10 min. pytest-timeout fails a hung test after
+    # 5 min (pyproject.toml); this stops anything else stuck long before
+    # GitHub's 6 h.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: sp-rtk-portal
