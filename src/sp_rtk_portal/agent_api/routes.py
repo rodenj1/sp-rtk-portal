@@ -39,7 +39,7 @@ from sp_rtk_portal.agent_api.auth import (
 from sp_rtk_portal.bases import claims, copies, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.db import Connection
-from sp_rtk_portal.tunnel.broker import as_ended, as_live
+from sp_rtk_portal.tunnel.broker import as_ended
 from sp_rtk_portal.tunnel.end_reason import EndReason
 from sp_rtk_portal.web.client_ip import rate_key
 
@@ -179,9 +179,7 @@ async def poll(
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
     tunnels = ctx.tunnels
-    sessions = (
-        [] if paused else [as_live(s) for s in tunnels.live_sessions(seen.base_id)]
-    )
+    sessions = tunnels.reported_sessions(seen.base_id, paused=paused)
     return reply(
         PollReply(
             config=config,
@@ -242,18 +240,25 @@ async def take_check_in(
     protocol_version: int,
     ip: str | None,
     msg: CheckIn,
+    on_tunnel: bool = False,
 ) -> tuple[presence.Seen, AgentConfig, list[Notice]]:
     """Record a Check-in, over HTTPS or on a held tunnel: the base is seen
     (from ``ip``), the copy watch sees it, and a change of remote access
     paused is audited (and cuts the base's Remote sessions). Raises
-    :class:`AgentRefused` (401 ``unclaimed``, 429)."""
+    :class:`AgentRefused` (401 ``unclaimed``, 429).
+
+    A refused Check-in over HTTPS is sent again later, but the tunnel has
+    no refusal for the agent to retry on: there, only a Check-in with no
+    news (:meth:`~.presence.Pace.news_in`) is paced, so a pause is never
+    lost (ticket #207). The agent sends one only on a change or when due."""
     async with ctx.db.connection() as conn:
         config = await agent_config.current(conn, ctx.settings)
         base = await presence.pace(conn, thumbprint)
     if base is None:
         raise _unclaimed()
     await copies.watch(ctx, base.base_id, ip)
-    _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
+    if not (on_tunnel and base.news_in(msg)):
+        _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
     now = ctx.clock.now()
     async with ctx.db.connection() as conn:
         seen = await presence.checked_in(

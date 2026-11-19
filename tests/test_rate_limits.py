@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from sp_rtk_portal_protocol import CHECK_IN_PATH, POLL_PATH, BaseKey
 
-from .harness.agent import RunningAgent, running_agent
+from .harness.agent import POLLING_VERSION, RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
 from .harness.fake_smtp import FakeSmtp
 from .harness.pages import base_card
@@ -193,8 +193,9 @@ async def test_the_wrong_code_limit_per_account_is_configurable(
 
 @asynccontextmanager
 async def _claimed(portal: Portal, operator: Browser) -> AsyncIterator[RunningAgent]:
-    """A Claimed base whose agent has Checked in and polled once (just now)."""
-    async with running_agent(portal) as agent:
+    """A Claimed polling base whose agent has Checked in and polled once
+    (just now)."""
+    async with running_agent(portal, protocol_version=POLLING_VERSION) as agent:
         await agent.claim(operator)
         yield agent
 

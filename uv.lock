@@ -2185,7 +2185,7 @@ dev = [
 
 [[package]]
 name = "sp-rtk-portal-protocol"
-version = "0.9.0"
+version = "0.10.0"
 source = { editable = "protocol" }
 dependencies = [
     { name = "cryptography" },

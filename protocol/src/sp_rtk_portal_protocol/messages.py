@@ -12,7 +12,17 @@ import dataclasses
 import json
 from dataclasses import dataclass
 from types import UnionType
-from typing import Any, ClassVar, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 T = TypeVar("T", bound="Message")
 
@@ -54,8 +64,13 @@ class _Mistyped(Exception):
 
 def _parse(value: Any, expected: Any) -> Any:
     """``value`` as the field type ``expected``: a plain type (``str``,
-    ``int``, ``bool``...), a :class:`Message`, ``list[X]`` or ``X | None``."""
+    ``int``, ``bool``...), a :class:`Message`, ``list[X]``, ``X | None`` or
+    a ``Literal`` of strings."""
     origin = get_origin(expected)
+    if origin is Literal:
+        if value not in get_args(expected):
+            raise _Mistyped
+        return value
     if origin is Union or origin is UnionType:
         for arm in get_args(expected):
             if arm is type(None):
@@ -338,6 +353,26 @@ class LanAddress(Message):
     """On the interface that holds the default route."""
 
 
+MODE_HOLDING: Final = "holding"
+"""Connection mode: the agent holds its tunnel open (protocol version 2)."""
+MODE_RECONNECTING: Final = "reconnecting"
+"""Connection mode: a version 2 agent whose held tunnel isn't open (yet, or
+any more): it backs off and tries again."""
+MODE_POLLING: Final = "polling"
+"""Connection mode: the Portal reaches the base only by Waking it through
+its polls (a version 1 agent, or a version 2 agent that fell back)."""
+
+ConnectionMode = Literal["holding", "reconnecting", "polling"]
+"""How the Portal reaches a Claimed base (ADR 0006). Offline isn't one: the
+Portal tells it from when it last heard from the base."""
+
+CONNECTION_MODES: tuple[ConnectionMode, ...] = (
+    MODE_HOLDING,
+    MODE_RECONNECTING,
+    MODE_POLLING,
+)
+
+
 @dataclass(frozen=True)
 class CheckIn(Message):
     """Body of a Check-in. The protocol version is in the version header; the
@@ -348,9 +383,9 @@ class CheckIn(Message):
     paused: bool | None = None
     """Remote access paused on site, as on a poll (``Poll.state``). ``None``:
     an agent from before this field, which says nothing either way."""
-    mode: str | None = None
-    """The agent's connection mode (``holding``, ``reconnecting`` or
-    ``polling``; protocol package 0.10.0). ``None`` from an older agent."""
+    mode: ConnectionMode | None = None
+    """The agent's connection mode (one of :data:`CONNECTION_MODES`;
+    protocol package 0.10.0). ``None`` from an older agent."""
 
 
 @dataclass(frozen=True)

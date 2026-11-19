@@ -140,7 +140,7 @@ async def session_bar(
         labels=bar.labels(base.name),
         poll_interval=online.interval(config, base.metered),
         last_seen=bar.last_seen(base),
-        connection=online.connection(base, config),
+        connection=online.connection_mode_words(base, config),
         holds=bar.holds(base),
         local_access=local.local_access(
             base.lan_addresses,
@@ -211,7 +211,7 @@ async def _receive(
             if message["type"] == "websocket.disconnect":
                 return
             if _is_renewal(message.get("text")):
-                ctx.tunnels.renew(session)
+                await ctx.tunnels.renew(session)
                 renewed.put_nowait(None)
 
 
@@ -269,6 +269,7 @@ async def agent_tunnel(websocket: WebSocket) -> None:
                 protocol_version=opened.version,
                 ip=ip,
                 msg=msg,
+                on_tunnel=True,
             )
         except AgentRefused as exc:
             log.info("ignored a Check-in on base %s's tunnel: %s", opened.base_id, exc)

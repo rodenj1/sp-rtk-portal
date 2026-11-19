@@ -5,6 +5,10 @@ from __future__ import annotations
 import pytest
 
 from sp_rtk_portal_protocol import (
+    CONNECTION_MODES,
+    MODE_HOLDING,
+    MODE_POLLING,
+    MODE_RECONNECTING,
     AgentConfig,
     CheckIn,
     CheckInReply,
@@ -184,3 +188,13 @@ def test_a_check_in_says_whether_remote_access_is_paused():
     assert CheckIn.from_json(paused.to_json()) == paused
     # An agent from before the field existed says nothing either way.
     assert CheckIn.from_json({"software_version": "0.11.0"}).paused is None
+
+
+def test_a_check_in_says_how_the_portal_reaches_the_base():
+    assert CONNECTION_MODES == (MODE_HOLDING, MODE_RECONNECTING, MODE_POLLING)
+    for mode in CONNECTION_MODES:
+        check_in = CheckIn(mode=mode)
+        assert CheckIn.from_json(check_in.to_json()) == check_in
+    assert CheckIn.from_json({}).mode is None  # an older agent
+    with pytest.raises(MessageError):
+        CheckIn.from_json({"mode": "teleporting"})

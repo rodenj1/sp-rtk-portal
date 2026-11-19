@@ -18,7 +18,7 @@ import pytest
 from sp_rtk_base import __version__ as base_version
 from sp_rtk_portal_protocol import PROTOCOL_VERSION
 
-from .harness.agent import RunningAgent, running_agent
+from .harness.agent import POLLING_VERSION, RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
 from .harness.pages import base_card, fields
 from .harness.portal import PORTAL_OWNER, Browser, Portal
@@ -47,8 +47,8 @@ async def owner(portal: Portal, authentik: FakeAuthentik) -> AsyncIterator[Brows
 
 @pytest.fixture
 async def agent(portal: Portal, operator: Browser) -> AsyncIterator[RunningAgent]:
-    """A Claimed base whose agent has Checked in and polled once."""
-    async with running_agent(portal) as a:
+    """A Claimed polling base whose agent has Checked in and polled once."""
+    async with running_agent(portal, protocol_version=POLLING_VERSION) as a:
         await a.claim(operator)
         yield a
 
@@ -166,7 +166,7 @@ async def test_check_in_data_and_the_public_ip_show_on_the_base(
     assert card["lan"] == ["192.168.1.20 (eth0, primary)", "10.8.0.4 (wlan0)"]
     assert card["public-ip"] == [agent.ip]
     assert card["connection"] == ["Polling every 20 s"]
-    assert card["protocol"] == [f"Protocol {PROTOCOL_VERSION}"]
+    assert card["protocol"] == [f"Protocol {POLLING_VERSION}"]
 
 
 async def test_a_later_check_in_updates_the_lan_addresses_and_public_ip(
@@ -382,7 +382,7 @@ async def test_an_unsupported_agent_gets_426_and_the_base_needs_upgrade(
 ):
     settings = portal.context.settings
     portal.context.settings = dataclasses.replace(
-        settings, min_protocol_version=PROTOCOL_VERSION + 1
+        settings, min_protocol_version=POLLING_VERSION + 1
     )
     base_id = (await agent.status()).base_id
 
@@ -403,12 +403,17 @@ async def test_an_unsupported_agent_gets_426_and_the_base_needs_upgrade(
     await agent.run(minutes=1)
     assert _seen(await _card(operator, agent)) == portal.clock.now()
 
-    # sp-rtk-base is upgraded: same key, same Claim, polling again.
-    agent.protocol_version = PROTOCOL_VERSION + 1
+    # sp-rtk-base is upgraded: same key, same Claim, polling again (no
+    # tunnel opens here: it falls back to polling).
+    agent.protocol_version = POLLING_VERSION + 1
     await agent.restart()
+    for _ in range(60):
+        if (await agent.status()).connection_mode == "polling":
+            break
+        await agent.run(seconds=20)
     card = await _card(operator, agent)
     assert card["state"] == ["Online"]
-    assert card["protocol"] == [f"Protocol {PROTOCOL_VERSION + 1}"]
+    assert card["protocol"] == [f"Protocol {POLLING_VERSION + 1}"]
     status = await agent.status()
     assert not status.needs_upgrade
     assert status.base_id == base_id
@@ -494,7 +499,12 @@ async def test_polling_costs_at_most_half_a_gigabyte_a_month(
     connection, so there's no TLS handshake to pay each time (a new
     connection per poll measured ~3.1 kB here with a small test certificate,
     ~6.1 kB through Cloudflare: ~890 MB/month)."""
-    async with wire(portal) as w, running_agent(portal, transport=w.transport) as a:
+    async with (
+        wire(portal) as w,
+        running_agent(
+            portal, transport=w.transport, protocol_version=POLLING_VERSION
+        ) as a,
+    ):
         await a.claim(operator)
         requests = len(a.requests)
         w.sent = w.received = 0

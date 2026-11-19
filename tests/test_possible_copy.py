@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 from sp_rtk_portal_protocol import CHECK_IN_PATH, POLL_PATH
 
-from .harness.agent import RunningAgent, running_agent
+from .harness.agent import POLLING_VERSION, RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
 from .harness.fake_smtp import FakeSmtp
 from .harness.pages import base_card
@@ -41,7 +41,7 @@ async def operator(browser: Browser, authentik: FakeAuthentik) -> Browser:
 
 @pytest.fixture
 async def agent(portal: Portal, operator: Browser) -> AsyncIterator[RunningAgent]:
-    async with running_agent(portal) as a:
+    async with running_agent(portal, protocol_version=POLLING_VERSION) as a:
         await a.claim(operator)
         yield a
 

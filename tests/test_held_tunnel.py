@@ -15,6 +15,7 @@ time; the stub playing the base's UI records every request that reaches it.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
 
@@ -316,6 +317,28 @@ async def test_a_holding_base_is_online_while_connected_and_2_min_after_a_drop(
     assert await card(operator, base_id) == ("Online", "Reconnecting its tunnel")
     portal.clock.advance(seconds=1)
     assert await card(operator, base_id) == ("Offline", "")
+
+
+async def test_a_reconnecting_agent_makes_no_https_requests_and_goes_offline_after_2_min(
+    portal: Portal, operator: Browser, agent: RunningAgent
+):
+    base_id = await held(portal, agent)
+    # The Portal turns every tunnel open away (503): the agent backs off,
+    # and its HTTPS would get through, but reconnecting it doesn't poll.
+    portal.context.settings = dataclasses.replace(
+        portal.context.settings, tunnel_opens_per_second=0
+    )
+    sent = len(agent.requests)
+    agent.drop_tunnel()
+    await eventually(lambda: not portal.context.tunnels.tunnel_up(base_id), "gone")
+
+    await agent.run(seconds=115)
+    assert await card(operator, base_id) == ("Online", "Reconnecting its tunnel")
+    await agent.run(seconds=10)
+    assert await card(operator, base_id) == ("Offline", "")
+    await agent.run(minutes=30)
+    assert agent.requests[sent:] == []
+    assert (await agent.status()).connection_mode == "reconnecting"
 
 
 # --- Version 1 agents ----------------------------------------------------------------

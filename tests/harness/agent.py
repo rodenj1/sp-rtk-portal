@@ -240,6 +240,11 @@ class Traffic:
         )
 
 
+POLLING_VERSION = 1
+"""The protocol version of an agent that only polls (its tunnel opens only
+on a Wake). A version 2 agent holds its tunnel, and polls only once it fell
+back; while reconnecting it makes no HTTPS requests at all."""
+
 LAN = [
     LanAddress(address="192.168.1.20", interface="eth0", primary=True),
     LanAddress(address="10.8.0.4", interface="wlan0", primary=False),

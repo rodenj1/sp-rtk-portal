@@ -6,7 +6,8 @@ channel tells it: "after 35 s" means exactly 35 s of virtual time passed.
 
 The base here polls (protocol version 1 agent) unless a test asks for one
 holding its tunnel (fixture ``h``): the bar opens at once, says Didn't wake
-after 15 s with no answer, and waits up to 75 s for a dropped tunnel (the
+after 15 s with no answer (its tunnel down, or its UI not answering down
+it), and waits up to 75 s for a dropped tunnel (the
 agent's first retry comes after a random 0-60 s).
 """
 
@@ -22,7 +23,7 @@ from playwright.async_api import Browser, Locator, Page, async_playwright, expec
 from sp_rtk_portal_protocol import HOLDING_VERSION
 
 from .harness.agent import RunningAgent, running_agent
-from .harness.base_ui import base_ui
+from .harness.base_ui import BaseUi, base_ui
 from .harness.clock import FakeClock
 from .harness.fake_authentik import FakeAuthentik
 from .harness.portal import Portal, running_portal
@@ -50,6 +51,7 @@ class World:
     origin: str
     page: Page
     base_id: str
+    ui: BaseUi
 
     def locate(self, field: str, page: Page | None = None) -> Locator:
         return (page or self.page).locator(f"[data-field={field}]")
@@ -98,7 +100,7 @@ async def world(
         base_id = (await agent.status()).base_id
         assert base_id
         try:
-            yield World(portal, agent, origin, page, base_id)
+            yield World(portal, agent, origin, page, base_id, ui)
         finally:
             await context.close()
 
@@ -270,6 +272,31 @@ async def test_a_holding_base_that_doesnt_answer_shows_didnt_wake_after_15_s(h: 
     # It comes back by itself, and the bar connects with no Retry.
     h.agent.reachable = True
     await holding(h)
+    await expect(h.locate("status")).to_have_text("Connected")
+    await frame_text(h)
+
+
+async def test_a_holding_base_whose_ui_never_answers_shows_didnt_wake_after_15_s(
+    h: World,
+):
+    h.ui.answering = False  # its tunnel is up, but nothing answers down it
+    await record_states(h.page)
+    await h.open_remotely()
+
+    await expect(h.locate("status")).to_have_text("Connected")
+    await eventually(lambda: bool(h.ui.seen), "the frame's request reaches the UI")
+    await h.agent.run(seconds=14)
+    await asyncio.sleep(0.2)
+    await expect(h.locate("status")).to_have_text("Connected")
+
+    await h.agent.run(seconds=1)
+    await expect(h.locate("status")).to_have_text("Didn't wake")
+    await expect(h.locate("didnt-wake")).to_contain_text("North field didn't wake")
+    await expect(h.locate("connection")).to_have_text("Holding its tunnel")
+    assert "waking" not in await seen_states(h.page)
+
+    # Its UI answers after all: the bar connects with no Retry.
+    h.ui.answering = True
     await expect(h.locate("status")).to_have_text("Connected")
     await frame_text(h)
 

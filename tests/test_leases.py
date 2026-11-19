@@ -80,6 +80,8 @@ async def test_a_renewed_token_keeps_working_and_is_refused_5_min_after_the_last
             lambda: bar.messages[-1].get("lease_expires_at") == expires,
             "the Portal answered the renewal",
         )
+        [record] = await portal.query("SELECT lease_expires_at FROM remote_session")
+        assert record["lease_expires_at"].isoformat() == expires
         await agent.run(minutes=4, seconds=59)
         assert (await operator.get(frame, headers=FRAMED)).status_code == 200
 

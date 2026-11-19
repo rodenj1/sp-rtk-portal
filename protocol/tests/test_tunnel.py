@@ -21,7 +21,14 @@ from sp_rtk_portal_protocol import (
     read_control,
     tunnel,
 )
-from sp_rtk_portal_protocol.tunnel import Frame, FrameError, Kind, Stream, Tunnel
+from sp_rtk_portal_protocol.tunnel import (
+    Frame,
+    FrameError,
+    Kind,
+    Stream,
+    Tunnel,
+    read_control_frame,
+)
 
 # --- Framing ---------------------------------------------------------------
 
@@ -237,6 +244,15 @@ def test_a_control_message_must_be_a_typed_json_object():
             read_control(payload)
     with pytest.raises(TypeError):
         control_message(AgentConfig(revision=1))
+
+
+def test_a_malformed_control_frame_closes_the_tunnel():
+    update = TunnelUpdate(config=AgentConfig(revision=3))
+    assert read_control_frame(control_message(update)) == update
+    assert read_control_frame(b'{"type":"from_a_newer_portal"}') is None
+    for payload in (b"not json", b'{"type":"update"}'):
+        with pytest.raises(FrameError):
+            read_control_frame(payload)
 
 
 async def test_closing_the_tunnel_ends_every_stream():
