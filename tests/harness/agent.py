@@ -19,7 +19,9 @@ its edges are wired to the harness:
   (``server_port``, see :mod:`.server`) whatever URL the agent asks for;
   the URLs it asked for are in ``agent.tunnel_urls``, each try and how it
   went (opened, refused, couldn't connect) in ``agent.tunnel_attempts``,
-  and every frame it sent or received in ``agent.frames``. Its streams go
+  and every frame it sent or received in ``agent.frames``. With
+  ``agent.upgrades_refused`` set, the network refuses websocket upgrades
+  (a proxy answering them 403) while its HTTPS still gets through. Its streams go
   to ``app_port`` (the :mod:`.base_ui` stub) instead of ``:8080``;
 - it speaks ``protocol_version`` (by default the current one, which holds
   its tunnel; ``1`` plays an agent that only polls and answers Wakes).
@@ -61,7 +63,9 @@ from sp_rtk_portal_protocol import (
 )
 from sp_rtk_portal_protocol.tunnel import Kind
 from websockets.asyncio.client import connect as ws_connect
+from websockets.datastructures import Headers
 from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 from .agent_time import AgentTime
 from .portal import CLOUDFLARED, Browser, Portal
@@ -279,6 +283,9 @@ class RunningAgent:
         """Every request the agent sent, in order."""
         self.reachable = True
         """``False``: the base is cut off (its requests fail to connect)."""
+        self.upgrades_refused = False
+        """``True``: a proxy on the way refuses websocket upgrades (403), so
+        no tunnel opens, while HTTPS gets through."""
         self._tunnel_ws: Any = None
         self._agent: PortalAgent | None = None
         self._server: asyncio.Server | None = None
@@ -294,6 +301,9 @@ class RunningAgent:
         if self.server_port is None or not self.reachable:
             self.tunnel_attempts.append(TunnelAttempt(at, None))
             raise OSError("no Portal served for the tunnel")
+        if self.upgrades_refused:
+            self.tunnel_attempts.append(TunnelAttempt(at, 403))
+            raise InvalidStatus(Response(403, "Forbidden", Headers()))
         async with self.time.working():
             try:
                 self._tunnel_ws = await ws_connect(
