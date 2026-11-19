@@ -35,6 +35,7 @@ from sp_rtk_portal.audit.retention import Purger
 from sp_rtk_portal.bases import routes as base_routes
 from sp_rtk_portal.bases.copies import CopyWatch
 from sp_rtk_portal.bases.events import BaseEvents
+from sp_rtk_portal.bases.modes import ModeCounter
 from sp_rtk_portal.clock import Clock, SystemClock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.context import PortalContext
@@ -82,6 +83,7 @@ def create_app(
     )
     ctx.base_events.on_unclaimed(sharing.unclaimed)
     audit_purger = Purger(db, clock, settings.audit_purge_interval)
+    mode_counter = ModeCounter(db, clock, settings, settings.mode_count_interval)
     ctx.account_events.on_password_changed(security.LogOutEverywhere(ctx))
     ctx.account_events.on_password_changed(review.review_due)
 
@@ -91,9 +93,11 @@ def create_app(
         try:
             await ctx.tunnels.start()
             audit_purger.start()
+            mode_counter.start()
             try:
                 yield
             finally:
+                await mode_counter.stop()
                 await audit_purger.stop()
                 await ctx.tunnels.stop()
         finally:

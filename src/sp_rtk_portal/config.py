@@ -93,6 +93,9 @@ class Settings:
     # Audit log (#99): how often (seconds, real time) entries older than 90
     # days are deleted.
     audit_purge_interval: float = 3600.0
+    # Logs (#209): how often (seconds, real time) the count of bases holding,
+    # polling and reconnecting is logged.
+    mode_count_interval: float = 300.0
 
     @property
     def oidc_issuer(self) -> str:
