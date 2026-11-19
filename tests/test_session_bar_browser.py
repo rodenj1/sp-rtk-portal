@@ -74,7 +74,7 @@ async def test_open_remotely_shows_waking_with_the_hint_then_connected(
 
         status = page.locator("[data-field=status]")
         await expect(status).to_have_text("Waking North field…")
-        await expect(page.locator("[data-field=hint]")).to_contain_text(
+        await expect(page.locator("[data-field=hint-polling]")).to_contain_text(
             "checks for requests every 20 s"
         )
         await expect(page.locator("[data-field=progress]")).to_be_visible()

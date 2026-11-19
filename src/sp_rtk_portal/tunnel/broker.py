@@ -60,12 +60,16 @@ Idle timeout, hard cap and lease come from the agent config current when the
 session started.
 
 What a Session bar shows (:meth:`TunnelBroker.state`) follows the base's
-current attempt to reach it: **waking** after Open remotely, **reconnecting**
-after the tunnel dropped under live sessions (the broker Wakes a polling
-base once more on its own; a holding base comes back by itself), and
-**didnt_wake** once an attempt has gone unanswered for the poll interval +
-:data:`WAKE_GRACE`. A holding base is never Woken. Retry (Open remotely again) starts a new
-attempt. **Still there?** (:meth:`TunnelBroker.still_there`) comes
+current attempt to reach it. A polling base is **waking** after Open
+remotely, **reconnecting** after its tunnel dropped under live sessions (the
+broker Wakes it once more on its own), and **didnt_wake** once an attempt
+has gone unanswered for the poll interval + :data:`WAKE_GRACE`. A holding
+base is never Woken: Open remotely finds its tunnel up (**connected** at
+once) or else is **connecting** until it comes back, for
+:data:`WAKE_GRACE`; after a drop it's **reconnecting** for
+:data:`HELD_RECONNECT`, since it comes back by itself. Either way an
+unanswered attempt ends in **didnt_wake**. Retry (Open remotely again)
+starts a new attempt. **Still there?** (:meth:`TunnelBroker.still_there`) comes
 :attr:`Settings.still_there_warning` before the hard cap;
 :meth:`TunnelBroker.keep_going` restarts the hard cap.
 """
@@ -114,7 +118,14 @@ TOKEN_BYTES = 32
 
 WAKE_GRACE = timedelta(seconds=15)
 """How much longer than one poll interval a Wake may take before the bar says
-Didn't wake (35 s, or 75 s metered, with the default intervals)."""
+Didn't wake (35 s, or 75 s metered, with the default intervals), and how
+long a holding base whose tunnel isn't up may take to answer Open remotely."""
+
+
+HELD_RECONNECT = timedelta(seconds=75)
+"""How long the bar waits for a holding base's dropped tunnel to come back
+before it says Didn't wake: the agent's first retry comes after a random
+0-60 s, plus :data:`WAKE_GRACE`."""
 
 
 ENDS_KEPT = timedelta(minutes=10)
@@ -170,14 +181,19 @@ class RemoteSession:
     """When its bars were last asked to renew (since the last renewal)."""
 
 
-SessionState = Literal["waking", "reconnecting", "didnt_wake", "connected", "ended"]
+SessionState = Literal[
+    "waking", "connecting", "reconnecting", "didnt_wake", "connected", "ended"
+]
+
+AttemptKind = Literal["waking", "connecting", "reconnecting"]
 
 
 @dataclass
 class _Attempt:
-    """A Wake the base hasn't answered yet (its tunnel isn't up)."""
+    """A Wake (or, for a holding base, its tunnel's return) the base hasn't
+    answered yet: its tunnel isn't up."""
 
-    kind: Literal["waking", "reconnecting"]
+    kind: AttemptKind
     deadline: datetime
     overdue: bool = False
     """Its bars were told Didn't wake."""
@@ -380,7 +396,7 @@ class TunnelBroker:
                     # Dropped under live sessions: Wake a polling base once
                     # more; a holding one comes back by itself.
                     with contextlib.suppress(Exception):
-                        await self._attempt_wake(base_id, "reconnecting")
+                        await self._attempt(base_id, opening=False)
             log.info("tunnel closed for base %s", base_id)
             await self._changed(base_id)
 
@@ -507,15 +523,15 @@ class TunnelBroker:
         if not self.tunnel_up(base_id):
             attempt = self._attempts.get(base_id)
             if attempt is None or attempt.deadline <= self._clock.now():
-                await self._attempt_wake(base_id, "waking")  # first, or Retry
+                await self._attempt(base_id, opening=True)  # first, or Retry
         await self._changed(base_id)
         return session
 
-    async def _attempt_wake(
-        self, base_id: str, kind: Literal["waking", "reconnecting"]
-    ) -> None:
-        """Start an attempt to reach the base: a Wake, unless it holds its
-        tunnel (it comes back by itself)."""
+    async def _attempt(self, base_id: str, *, opening: bool) -> None:
+        """Start an attempt to reach the base, on Open remotely (``opening``)
+        or after its tunnel dropped: a Wake for a polling base, answered
+        within its poll interval + :data:`WAKE_GRACE`; a holding base comes
+        back by itself."""
         async with self._db.connection() as conn:
             config = await agent_config.current(conn, self._settings)
             cur = await conn.execute(
@@ -523,10 +539,17 @@ class TunnelBroker:
                 (base_id,),
             )
             row = await cur.fetchone()
-        beat = timedelta(seconds=online.interval(config, bool(row and row["metered"])))
+        kind: AttemptKind
         if row is None or row["connection_mode"] == "polling":
             self.wake(base_id)
-        self._attempts[base_id] = _Attempt(kind, self._clock.now() + beat + WAKE_GRACE)
+            kind = "waking" if opening else "reconnecting"
+            beat = online.interval(config, bool(row and row["metered"]))
+            wait = timedelta(seconds=beat) + WAKE_GRACE
+        elif opening:
+            kind, wait = "connecting", WAKE_GRACE
+        else:
+            kind, wait = "reconnecting", HELD_RECONNECT
+        self._attempts[base_id] = _Attempt(kind, self._clock.now() + wait)
 
     def lookup(self, base_id: str, token: str) -> RemoteSession | None:
         """The live Remote session this path token belongs to, on this base

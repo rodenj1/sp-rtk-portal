@@ -22,7 +22,7 @@ button { font: inherit; padding: .5rem 1rem; cursor: pointer; }
 .bases > li { display: grid; gap: .25rem; padding: .5rem .75rem; border: 1px solid #8884; border-radius: .375rem; }
 .bases .base-head { display: flex; flex-wrap: wrap; gap: .25rem 1rem; align-items: baseline; }
 .bases .name { font-weight: 600; }
-.bases .seen, .bases .facts { color: #888; }
+.bases .seen, .bases .mode, .bases .facts { color: #888; }
 .bases .state { font-weight: 600; }
 .bases .state-online { color: #15803d; }
 .bases .state-offline, .bases .state-never-seen { color: #888; }
