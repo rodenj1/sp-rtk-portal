@@ -17,9 +17,10 @@ its edges are wired to the harness:
   new ``PortalAgent`` over the same directory;
 - its tunnel (a real websocket) goes to the Portal served over TCP
   (``server_port``, see :mod:`.server`) whatever URL the agent asks for;
-  the URLs it asked for are in ``agent.tunnel_urls``, and every frame it
-  sent or received in ``agent.frames``. Its streams go to ``app_port`` (the
-  :mod:`.base_ui` stub) instead of ``:8080``;
+  the URLs it asked for are in ``agent.tunnel_urls``, each try and how it
+  went (opened, refused, couldn't connect) in ``agent.tunnel_attempts``,
+  and every frame it sent or received in ``agent.frames``. Its streams go
+  to ``app_port`` (the :mod:`.base_ui` stub) instead of ``:8080``;
 - it speaks ``protocol_version`` (by default the current one, which holds
   its tunnel; ``1`` plays an agent that only polls and answers Wakes).
 
@@ -53,6 +54,7 @@ from sp_rtk_base.portal_agent.protocol import AgentStatus
 from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
 from sp_rtk_portal_protocol.tunnel import Kind
 from websockets.asyncio.client import connect as ws_connect
+from websockets.exceptions import InvalidStatus
 
 from .agent_time import AgentTime
 from .portal import CLOUDFLARED, Browser, Portal
@@ -152,6 +154,17 @@ class Sent:
     retry_after: str | None
 
 
+@dataclass(frozen=True)
+class TunnelAttempt:
+    """One tunnel open the agent tried, and how it went."""
+
+    at: datetime
+    status: int | None
+    """101: it opened; else the HTTP status it was refused with; ``None``:
+    it couldn't connect at all."""
+    retry_after: str | None = None
+
+
 class Traffic:
     """HTTP/1.1 bytes the agent sent and received (headers and bodies, as on
     the wire inside TLS), for the polling-cost estimate."""
@@ -193,6 +206,7 @@ class RunningAgent:
         app_port: int | None = None,
         transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
         protocol_version: int = PROTOCOL_VERSION,
+        time: AgentTime | None = None,
     ) -> None:
         self.portal = portal
         self._transport = transport
@@ -200,12 +214,14 @@ class RunningAgent:
         self.app_port = app_port
         self.tunnel_urls: list[str] = []
         """Every tunnel URL the agent tried to open."""
+        self.tunnel_attempts: list[TunnelAttempt] = []
+        """Every tunnel open the agent tried, when, and how it went."""
         self.frames: list[Framed] = []
         """Every tunnel frame the agent sent or received, in order."""
         self.state_dir = state_dir
         self.sock = sock
         self.ip = ip
-        self.time = AgentTime(portal.clock)
+        self.time = time if time is not None else AgentTime(portal.clock)
         self.lan: list[LanAddress] = list(LAN)
         self.protocol_version = protocol_version
         """What the agent speaks; change it, then ``restart()``, to play an
@@ -226,13 +242,26 @@ class RunningAgent:
 
     async def _tunnel_connect(self, url: str, headers: dict[str, str]) -> Any:
         self.tunnel_urls.append(url)
+        at = self.portal.clock.now()
         if self.server_port is None or not self.reachable:
+            self.tunnel_attempts.append(TunnelAttempt(at, None))
             raise OSError("no Portal served for the tunnel")
         async with self.time.working():
-            self._tunnel_ws = await ws_connect(
-                f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
-                additional_headers={**headers, "CF-Connecting-IP": self.ip},
-            )
+            try:
+                self._tunnel_ws = await ws_connect(
+                    f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
+                    additional_headers={**headers, "CF-Connecting-IP": self.ip},
+                )
+            except InvalidStatus as exc:
+                response = exc.response
+                self.tunnel_attempts.append(
+                    TunnelAttempt(
+                        at, response.status_code, response.headers.get("Retry-After")
+                    )
+                )
+                raise
+        self.tunnel_attempts.append(TunnelAttempt(at, 101))
+        self.time.serving()
         return _RecordedWebSocket(self._tunnel_ws, self)
 
     def drop_tunnel(self) -> None:
@@ -337,10 +366,13 @@ async def running_agent(
     app_port: int | None = None,
     transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
     protocol_version: int = PROTOCOL_VERSION,
+    time: AgentTime | None = None,
 ) -> AsyncIterator[RunningAgent]:
     """``transport``: what carries the agent's HTTPS (by default
     :class:`CloudflareTransport`; see :mod:`.wire`). ``protocol_version``:
-    what the agent speaks (``1``: an agent that only polls)."""
+    what the agent speaks (``1``: an agent that only polls). ``time``: the
+    virtual time it sleeps on (by default its own; several agents on one
+    clock need to share one, so that moving it wakes all of them)."""
     # AF_UNIX paths are capped near 108 bytes: keep the temp dir short.
     with tempfile.TemporaryDirectory(prefix="agent-") as d:
         agent = RunningAgent(
@@ -352,6 +384,7 @@ async def running_agent(
             app_port=app_port,
             transport=transport,
             protocol_version=protocol_version,
+            time=time,
         )
         await agent.start()
         try:
