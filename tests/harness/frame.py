@@ -27,7 +27,7 @@ from .agent import RunningAgent, running_agent
 from .clock import FakeClock
 from .fake_authentik import FakeAuthentik
 from .portal import Portal, running_portal
-from .real_base import RealBase
+from .real_base import RealBase, reading_agent
 from .server import free_socket, localhost_tls, serving
 
 EMAIL = "operator@example.com"
@@ -114,6 +114,8 @@ class Remote:
     origin: str
     base_id: str
     requests: Recorder
+    ui: RealBase
+    """The base's UI (its own URL, for a page opened directly on it)."""
 
     @property
     def base(self) -> FrameLocator:
@@ -172,10 +174,13 @@ async def remote_frame(
     clock: FakeClock,
     authentik: FakeAuthentik,
     browser: Browser,
-    base: RealBase,
+    base: RealBase | None,
     *,
     viewport: dict[str, int] | None = None,
 ) -> AsyncIterator[Remote]:
+    """``base``: a real base already running (shared by a module's tests),
+    or ``None`` for one of its own that reads this agent's control socket,
+    as on a base (what the agent says shows on its pages)."""
     sock = free_socket()
     origin = f"https://localhost:{sock.getsockname()[1]}"
     authentik.add_user(EMAIL, PASSWORD)
@@ -186,9 +191,14 @@ async def remote_frame(
                 serving(recorder, sock, tls=tls),
                 serving(portal.app) as tunnel_port,  # the agent's way in
                 running_agent(
-                    portal, server_port=tunnel_port, app_port=base.port
+                    portal,
+                    server_port=tunnel_port,
+                    app_port=base.port if base is not None else None,
                 ) as agent,
+                contextlib.AsyncExitStack() as stack,
             ):
+                if base is None:
+                    base = await stack.enter_async_context(reading_agent(agent))
                 context = await browser.new_context(
                     viewport=viewport or {"width": 1400, "height": 1000},
                     accept_downloads=True,
@@ -204,7 +214,7 @@ async def remote_frame(
                     await expect(status).to_have_text("Connected")
                     base_id = (await agent.status()).base_id
                     assert base_id is not None
-                    yield Remote(page, portal, agent, origin, base_id, recorder)
+                    yield Remote(page, portal, agent, origin, base_id, recorder, base)
                 finally:
                     await context.close()
 
