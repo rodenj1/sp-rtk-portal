@@ -22,7 +22,8 @@ All of it is process-local state (the Portal is a single instance, ADR
   It ends when nobody attended it for the idle timeout, at the hard cap, or
   when the Portal ends it: :meth:`TunnelBroker.end_for_account` (un-Share,
   leaving, logging out, account deletion) or :meth:`TunnelBroker.end_for_base`
-  (Un-claim, pause). Ending always revokes the token at once.
+  (Un-claim, pause; a paused base keeps its held tunnel, refusing its
+  streams). Ending always revokes the token at once.
 - **Lease.** A path token works only until its lease expires (ADR 0005):
   starting or rejoining the session, opening a status channel and
   :meth:`TunnelBroker.renew` each give it a fresh lease. The broker asks the
@@ -338,11 +339,6 @@ class TunnelBroker:
         with contextlib.suppress(Exception):
             await attached.websocket.close(code=1000)
 
-    async def _drop_tunnel(self, base_id: str) -> None:
-        attached = self._tunnels.get(base_id)
-        if attached is not None:
-            await self._close_tunnel(attached)
-
     # --- Remote sessions -----------------------------------------------------
 
     def _live(self, base_id: str) -> list[RemoteSession]:
@@ -561,15 +557,19 @@ class TunnelBroker:
         reason: EndReason,
         *,
         ip: str | None = None,
+        keep_held: bool = False,
     ) -> None:
         """The base is gone or unreachable (Un-claim, pause): end every
         Remote session on it, revoking their tokens, drop any pending Wake
-        and close its tunnel."""
+        and close its tunnel. ``keep_held`` (pause): a held tunnel stays
+        open, the agent refusing its streams."""
         for session in self._live(base_id):
             await self._end(session, reason, ip=ip)
         self._wakes.pop(base_id, None)
         self._attempts.pop(base_id, None)
-        await self._drop_tunnel(base_id)
+        attached = self._tunnels.get(base_id)
+        if attached is not None and not (keep_held and attached.held):
+            await self._close_tunnel(attached)
         await self._changed(base_id)
 
     async def _end(

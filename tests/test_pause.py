@@ -1,19 +1,24 @@
-"""Seam 1: remote access paused on site (ticket #92).
+"""Seam 1: remote access paused on site (tickets #92, #207).
 
 The Operator pauses remote access on the base's local Portal page. The real
-agent keeps its Claim and keeps polling, reports ``paused`` and ignores
-Wakes; the Portal shows "Remote access paused", refuses Open remotely and
-ends the base's live Remote sessions. Only the base can resume. The agent
-also learns from each poll who is using the base remotely.
+agent keeps its Claim, keeps polling and Checking in, reports ``paused`` and
+ignores Wakes; it keeps its held tunnel but ends the open streams and
+refuses every new one. The Portal shows "Remote access paused", refuses
+Open remotely and ends the base's live Remote sessions. Only the base can
+resume, on the same tunnel. The agent also learns from each poll who is
+using the base remotely.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import datetime
 
 import pytest
-from sp_rtk_portal_protocol import CHECK_IN_PATH, CheckIn
+from sp_rtk_portal_protocol import CHECK_IN_PATH, CheckIn, Stream
+from wsproto import ConnectionType, WSConnection
+from wsproto.events import AcceptConnection, Request
 
 from .harness.agent import BASE_IP, RunningAgent, running_agent
 from .harness.base_ui import BaseUi, base_ui
@@ -26,6 +31,7 @@ from .harness.signer import signing_agent
 
 EMAIL = "operator@example.com"
 PASSWORD = "correct horse battery staple"
+TUNNEL_URL = "wss://sp-rtk-base.big-spray.com/agent/tunnel"
 
 
 @pytest.fixture
@@ -168,10 +174,52 @@ async def test_a_paused_polling_agent_opens_no_tunnel_for_a_wake_sent_anyway(
     )
 
 
-async def test_pausing_cuts_live_remote_sessions_and_revokes_their_tokens(
-    portal: Portal, operator: Browser, agent: RunningAgent, server: int
-):
+async def held(portal: Portal, agent: RunningAgent) -> str:
+    """Wait until both ends see the base's tunnel open; its base id."""
     base_id = await base_of(agent)
+
+    async def open_here() -> bool:
+        return (await agent.status()).tunnel == "open"
+
+    await eventually(open_here, "the agent's tunnel open")
+    await eventually(
+        lambda: portal.context.tunnels.tunnel_up(base_id), "the Portal sees it"
+    )
+    return base_id
+
+
+def check_ins_since(agent: RunningAgent, since: datetime) -> int:
+    """Check-ins the Portal accepted from ``agent`` since ``since``."""
+    return sum(
+        1
+        for r in agent.requests
+        if r.path == CHECK_IN_PATH and r.status == 200 and r.at > since
+    )
+
+
+async def read_all(stream: Stream) -> bytes:
+    data = b""
+    while chunk := await asyncio.wait_for(stream.read(), 5):
+        data += chunk
+    return data
+
+
+async def open_websocket(stream: Stream) -> WSConnection:
+    """Open a websocket to the base's UI down ``stream``: a stream that
+    stays open until one side ends it."""
+    ws = WSConnection(ConnectionType.CLIENT)
+    await stream.write(ws.send(Request(host="sp-rtk-base.big-spray.com", target="/ws")))
+    events: list[object] = []
+    while not any(isinstance(e, AcceptConnection) for e in events):
+        ws.receive_data(await asyncio.wait_for(stream.read(), 5))
+        events += list(ws.events())
+    return ws
+
+
+async def test_pausing_ends_remote_sessions_and_their_streams_but_keeps_the_tunnel(
+    portal: Portal, operator: Browser, agent: RunningAgent, server: int, ui: BaseUi
+):
+    base_id = await held(portal, agent)
     tunnels = portal.context.tunnels
     [account] = await portal.query("SELECT id FROM account WHERE email = %s", EMAIL)
     await operator.action(f"/bases/{base_id}/remote")
@@ -179,20 +227,21 @@ async def test_pausing_cuts_live_remote_sessions_and_revokes_their_tokens(
     assert session is not None
 
     async with status_channel(server, operator, base_id) as bar:
-        await agent.run(seconds=20)
         await bar.until("connected")
+        stream = await tunnels.open_stream(base_id)
+        await open_websocket(stream)
+        paused_at = portal.clock.now()
 
         await agent.pause()
 
         ended = await bar.until("ended")
+        assert await read_all(stream) == b""  # the open stream ended too
 
     assert ended["reason"] == "paused"
     page = fields((await operator.get(f"/bases/{base_id}")).text)
     assert page["status"] == ["Remote access paused"]
     assert "remote-paused" in page
     assert tunnels.lookup(base_id, session.token) is None
-    assert not tunnels.tunnel_up(base_id)
-    assert (await agent.status()).tunnel == "closed"
     entries = await portal.query(
         "SELECT kind, base_id, detail FROM audit_entry"
         " WHERE kind IN ('remote_session_end', 'remote_access_paused',"
@@ -204,11 +253,58 @@ async def test_pausing_cuts_live_remote_sessions_and_revokes_their_tokens(
     ]
     assert entries[1]["detail"]["reason"] == "paused"
 
+    # The tunnel stays open, and the base keeps Checking in.
+    await agent.run(minutes=15)
+    assert tunnels.tunnel_up(base_id)
+    status = await agent.status()
+    assert (status.tunnel, status.connection_mode) == ("open", "holding")
+    assert agent.tunnel_urls == [TUNNEL_URL]  # never reopened
+    assert check_ins_since(agent, paused_at) >= 2
+    assert (await card(operator, base_id))[0] == "paused"
+
     await agent.resume()
     entries = await portal.query(
         "SELECT kind FROM audit_entry WHERE kind = 'remote_access_resumed'"
     )
     assert len(entries) == 1
+
+
+async def test_a_paused_base_refuses_a_stream_before_it_reaches_the_ui(
+    portal: Portal, agent: RunningAgent, ui: BaseUi
+):
+    base_id = await held(portal, agent)
+    await agent.pause()
+
+    stream = await portal.context.tunnels.open_stream(base_id)  # as a buggy Portal
+    await stream.write(b"GET /survey HTTP/1.1\r\nHost: portal\r\n\r\n")
+
+    assert await read_all(stream) == b""
+    assert ui.seen == []
+    assert portal.context.tunnels.tunnel_up(base_id)
+
+
+async def test_resuming_reenables_open_remotely_on_the_same_tunnel(
+    portal: Portal, operator: Browser, agent: RunningAgent, server: int, ui: BaseUi
+):
+    base_id = await held(portal, agent)
+    await agent.pause()
+    state, f = await card(operator, base_id)
+    assert (state, f["state"]) == ("paused", ["Remote access paused"])
+    assert "open-remotely@disabled" in f
+
+    await agent.resume()
+
+    state, f = await card(operator, base_id)
+    assert (state, f["state"]) == ("online", ["Online"])
+    assert "open-remotely@disabled" not in f
+    resp = await operator.action(f"/bases/{base_id}/remote")
+    assert resp.json() == {"next": f"/bases/{base_id}"}
+    async with status_channel(server, operator, base_id) as bar:
+        await bar.until("connected")  # at once: no reconnect, no Wake
+    stream = await portal.context.tunnels.open_stream(base_id)
+    await stream.write(b"GET /survey HTTP/1.1\r\nHost: portal\r\n\r\n")
+    assert (await read_all(stream)).endswith(b"base page /survey")
+    assert agent.tunnel_urls == [TUNNEL_URL]
 
 
 async def test_the_agent_learns_who_is_connected_remotely_and_since_when(
