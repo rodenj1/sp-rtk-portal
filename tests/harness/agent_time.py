@@ -8,7 +8,9 @@ ends, and until nothing the agent started is still in flight (its requests
 and tunnel opens are marked with :meth:`AgentTime.working`), so the requests
 it makes have landed before the test looks and nothing lags behind virtual
 time. The agent runs more than one task (its beat, its tunnel's pings), and
-one may still be talking to the Portal when another's sleep ends.
+one may still be talking to the Portal when another's sleep ends. A task
+that wakes to open the held tunnel then serves it, maybe for hours, and
+says so (:meth:`AgentTime.serving`) rather than sleep again.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ class AgentTime:
         self._sleepers: list[_Sleeper] = []
         self._seq = itertools.count()
         self._busy = 0
+        self._serving: set[asyncio.Task[Any]] = set()
 
     @contextlib.asynccontextmanager
     async def working(self) -> AsyncIterator[None]:
@@ -49,7 +52,17 @@ class AgentTime:
         finally:
             self._busy -= 1
 
+    def serving(self) -> None:
+        """The current task now serves a tunnel until it closes (the agent
+        holding its tunnel): once woken, it isn't waited for to sleep
+        again."""
+        task = asyncio.current_task()
+        if task is not None:
+            self._serving.add(task)
+
     async def sleep(self, seconds: float) -> None:
+        if (task := asyncio.current_task()) is not None:
+            self._serving.discard(task)
         sleeper = _Sleeper(
             self.clock.now() + timedelta(seconds=seconds),
             next(self._seq),
@@ -81,7 +94,7 @@ class AgentTime:
             await asyncio.sleep(0.001)
             if self._busy:
                 continue
-            if task is None or task.done():
+            if task is None or task.done() or task in self._serving:
                 return
             if any(s.task is task and s.seq > after for s in self._sleepers):
                 return
