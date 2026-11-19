@@ -182,8 +182,12 @@ async def test_the_backoff_cap_comes_from_the_agent_config(
     portal: Portal, agent: RunningAgent, owner: Browser
 ):
     await set_config(owner, reconnect_backoff_cap="60")
-    await agent.run(seconds=20)  # its next poll brings the new config
-    assert (await agent.status()).config_revision == 2
+    await agent.run(seconds=20)
+
+    async def applied() -> bool:  # it comes on the tunnel, in its own time
+        return (await agent.status()).config_revision == 2
+
+    await eventually(applied, "the agent applies the new config")
 
     agent.reachable = False
     dropped = await drop(agent)
