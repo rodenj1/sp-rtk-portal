@@ -36,10 +36,13 @@ RANGES: dict[str, tuple[int, int]] = {
     "tunnel_hard_cap": (60, 86400),
     "ping_interval": (10, 600),
     "tunnel_silence_timeout": (30, 3600),
+    "lease_length": (60, 3600),
+    "lease_renewal_interval": (10, 600),
 }
 """Seconds; the agent ignores a value outside these (sp-rtk-base
 ``portal_agent.agent_config.RANGES``; it doesn't use the Remote session
-limits or the silence timeout, which only the Portal applies)."""
+limits or the silence timeout, which only the Portal applies). The lease
+ones are the Session bar's alone: the agent has no range for them."""
 
 
 class ConfigRefused(Exception):
@@ -97,6 +100,8 @@ def check(config: AgentConfig, settings: Settings) -> None:
             "ping_interval must be shorter than tunnel_silence_timeout, or the "
             "Portal closes every held tunnel"
         )
+    if config.lease_renewal_interval >= config.lease_length:
+        raise ConfigRefused("lease_renewal_interval must be shorter than lease_length")
     if config.tunnel_url:
         portal = urlsplit(settings.public_origin)
         url = urlsplit(config.tunnel_url)

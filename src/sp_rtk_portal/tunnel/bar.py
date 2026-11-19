@@ -6,7 +6,9 @@ status channel (``/bases/<id>/session``).
 ends), "still_there": bool, "cap_at": ISO time the hard cap pauses it,
 "present": [{"name", "role"}] (other users with a Session bar open on this
 base), "last_seen": "YYYY-MM-DD HH:MM UTC" | "never", "wake_mode": "Polling every 20 s"
-| "Polling every 60 s (metered)"}``.
+| "Polling every 60 s (metered)", "renew": bool (renew the lease now: the bar
+answers ``{"type": "renew"}``), "lease_expires_at": ISO time the path token
+is refused unless renewed (until it ends)}``.
 
 An ended session with reason ``hard_cap`` is shown as Session paused.
 """
@@ -67,9 +69,12 @@ async def status(ctx: PortalContext, session: RemoteSession) -> dict[str, Any]:
         "still_there": broker.still_there(session),
         "cap_at": broker.cap_at(session).isoformat(),
         "present": present,
+        "renew": broker.renewal_due(session),
     }
     if not session.ended:
         message["frame"] = frame_path(session)
+        if session.lease_expires_at is not None:
+            message["lease_expires_at"] = session.lease_expires_at.isoformat()
     if base is not None:
         message["last_seen"] = last_seen(base)
         message["wake_mode"] = online.wake_mode(base, config)

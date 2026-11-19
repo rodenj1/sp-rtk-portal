@@ -23,6 +23,14 @@ All of it is process-local state (the Portal is a single instance, ADR
   when the Portal ends it: :meth:`TunnelBroker.end_for_account` (un-Share,
   leaving, logging out, account deletion) or :meth:`TunnelBroker.end_for_base`
   (Un-claim, pause). Ending always revokes the token at once.
+- **Lease.** A path token works only until its lease expires (ADR 0005):
+  starting or rejoining the session, opening a status channel and
+  :meth:`TunnelBroker.renew` each give it a fresh lease. The broker asks the
+  session's open Session bars to renew (:meth:`TunnelBroker.renewal_due`)
+  every renewal interval on its own clock, so a hidden tab's throttled
+  timers don't matter; a bar that stops answering lets the lease expire,
+  which ends the session (:attr:`EndReason.LEASE_EXPIRED`). An ended
+  (paused) session is never renewed.
 
 Ending and the caller's transaction: callers end Remote sessions *inside*
 their own transaction (an Un-claim, a Share removal, a log out...), before
@@ -33,7 +41,11 @@ leaves a base whose Remote sessions ended, with the record saying why, and
 its users open it again. The record never waits on a caller, and a row is
 open exactly while its session is live (``remote_session_live_idx``).
 
-Idle timeout and hard cap come from the agent config current when the
+The broker keeps each base's Remote sessions that ended in the last
+:data:`ENDS_KEPT`, with their reasons, for the base's own record (its
+polls list them, :meth:`TunnelBroker.recent_ends`).
+
+Idle timeout, hard cap and lease come from the agent config current when the
 session started.
 
 What a Session bar shows (:meth:`TunnelBroker.state`) follows the base's
@@ -81,6 +93,11 @@ WAKE_GRACE = timedelta(seconds=15)
 Didn't wake (35 s, or 75 s metered, with the default intervals)."""
 
 
+ENDS_KEPT = timedelta(minutes=10)
+"""How long a base's ended Remote sessions are kept for its polls: several
+poll intervals, even metered (the agent keeps each end once)."""
+
+
 class TunnelDown(Exception):
     """The base has no tunnel open."""
 
@@ -107,6 +124,17 @@ class RemoteSession:
     end_reason: EndReason | None = None
     warned: bool = False
     """Its bars were told Still there? (until Keep going)."""
+    who: str = ""
+    """The user's email, at the start."""
+    shared: bool = False
+    """The user has the base through a Share (not its Operator)."""
+    ended_at: datetime | None = None
+    lease: timedelta = timedelta(minutes=5)
+    lease_renewal: timedelta = timedelta(minutes=1)
+    lease_expires_at: datetime | None = None
+    """The path token is refused from then on (set at start)."""
+    renewal_asked_at: datetime | None = None
+    """When its bars were last asked to renew (since the last renewal)."""
 
 
 SessionState = Literal["waking", "reconnecting", "didnt_wake", "connected", "ended"]
@@ -164,6 +192,7 @@ class TunnelBroker:
         self._sessions: dict[int, RemoteSession] = {}
         self._bases: dict[str, _Base] = {}
         self._attempts: dict[str, _Attempt] = {}
+        self._ends: dict[str, list[RemoteSession]] = {}
         self._stopping = False
         self._sweeper: asyncio.Task[None] | None = None
 
@@ -341,6 +370,12 @@ class TunnelBroker:
             token = secrets.token_urlsafe(TOKEN_BYTES)
             async with self._db.connection() as conn:
                 config = await agent_config.current(conn, self._settings)
+                cur = await conn.execute(
+                    "SELECT a.email, b.owner_account_id IS DISTINCT FROM a.id"
+                    " AS shared FROM account a, base b WHERE a.id = %s AND b.id = %s",
+                    (account_id, base_id),
+                )
+                user = await cur.fetchone()
                 session_id = await store.started(
                     conn,
                     account_id=account_id,
@@ -360,9 +395,14 @@ class TunnelBroker:
                 hard_cap=timedelta(seconds=config.tunnel_hard_cap),
                 ip=ip,
                 left_at=now,
+                who=user["email"] if user else "",
+                shared=bool(user and user["shared"]),
+                lease=timedelta(seconds=config.lease_length),
+                lease_renewal=timedelta(seconds=config.lease_renewal_interval),
             )
             self._sessions[session.id] = session
             log.info("Remote session %s started on base %s", session.id, base_id)
+        self.renew(session)
         if not self.tunnel_up(base_id):
             attempt = self._attempts.get(base_id)
             if attempt is None or attempt.deadline <= self._clock.now():
@@ -394,7 +434,35 @@ class TunnelBroker:
         for session in self._sessions.values():
             if hmac.compare_digest(session.token, token) and session.base_id == base_id:
                 found = session
+        if found is not None and self._lease_expired(found):
+            return None  # the sweep ends it
         return found
+
+    def recent_ends(self, base_id: str) -> list[RemoteSession]:
+        """The base's Remote sessions that ended in the last
+        :data:`ENDS_KEPT`, oldest first."""
+        since = self._clock.now() - ENDS_KEPT
+        return [
+            s for s in self._ends.get(base_id, []) if s.ended_at and s.ended_at > since
+        ]
+
+    def renew(self, session: RemoteSession) -> None:
+        """A fresh lease for the session's path token (not once it ended)."""
+        if session.ended:
+            return
+        session.lease_expires_at = self._clock.now() + session.lease
+        session.renewal_asked_at = None
+
+    def renewal_due(self, session: RemoteSession) -> bool:
+        """Its Session bars should renew the lease now."""
+        if session.ended or session.lease_expires_at is None:
+            return False
+        renewed_at = session.lease_expires_at - session.lease
+        return self._clock.now() >= renewed_at + session.lease_renewal
+
+    def _lease_expired(self, session: RemoteSession) -> bool:
+        expires = session.lease_expires_at
+        return expires is not None and self._clock.now() >= expires
 
     def touch(self, session: RemoteSession) -> None:
         """Record activity (a proxied request)."""
@@ -440,6 +508,7 @@ class TunnelBroker:
         """A Session bar's status channel is open on ``session``."""
         session.attendants += 1
         session.left_at = None
+        self.renew(session)
         if ip:
             session.ip = ip
         if session.attendants == 1:
@@ -511,7 +580,9 @@ class TunnelBroker:
         if session.ended or self._sessions.get(session.id) is not session:
             return
         session.ended, session.end_reason = True, reason
+        session.ended_at = self._clock.now()
         del self._sessions[session.id]
+        self._ends.setdefault(session.base_id, []).append(session)
         async with self._db.connection() as conn:
             await store.ended(
                 conn,
@@ -535,9 +606,10 @@ class TunnelBroker:
     # --- timeouts ------------------------------------------------------------
 
     async def sweep(self) -> None:
-        """End Remote sessions past their idle timeout or hard cap, close
-        held tunnels gone silent, and tell Session bars when a Wake went
-        unanswered or the hard cap is near."""
+        """End Remote sessions past their idle timeout, hard cap or lease,
+        close held tunnels gone silent, and tell Session bars when a Wake
+        went unanswered, the hard cap is near or the lease is due for
+        renewal."""
         now = self._clock.now()
         for base_id, attached in list(self._tunnels.items()):
             if not attached.closing and attached.silent(now):
@@ -547,6 +619,11 @@ class TunnelBroker:
             if now - session.started_at >= session.hard_cap:
                 await self._end(session, EndReason.HARD_CAP)
                 continue
+            if self._lease_expired(session):
+                await self._end(session, EndReason.LEASE_EXPIRED)
+                continue
+            if self._ask_renewal(session, now):
+                await self._changed(session.base_id)
             if not session.warned and self.still_there(session):
                 session.warned = True
                 await self._changed(session.base_id)
@@ -556,6 +633,11 @@ class TunnelBroker:
                 and now - session.left_at >= session.idle_timeout
             ):
                 await self._end(session, EndReason.LEFT)
+        for base_id in list(self._ends):
+            if not (kept := self.recent_ends(base_id)):
+                del self._ends[base_id]
+            else:
+                self._ends[base_id] = kept
         for base_id, pending in list(self._wakes.items()):
             if pending.expires_at <= now:
                 del self._wakes[base_id]
@@ -563,6 +645,17 @@ class TunnelBroker:
             if not attempt.overdue and attempt.deadline <= now:
                 attempt.overdue = True
                 await self._changed(base_id)
+
+    def _ask_renewal(self, session: RemoteSession, now: datetime) -> bool:
+        """Time to ask the session's open bars to renew (once per renewal
+        interval while they don't)."""
+        if session.attendants == 0 or not self.renewal_due(session):
+            return False
+        asked = session.renewal_asked_at
+        if asked is not None and now - asked < session.lease_renewal:
+            return False
+        session.renewal_asked_at = now
+        return True
 
     async def _sweep_forever(self) -> None:
         while True:
