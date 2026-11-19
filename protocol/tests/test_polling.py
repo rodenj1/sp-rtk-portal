@@ -57,6 +57,8 @@ def test_the_config_block_takes_built_in_defaults_for_what_it_lacks():
     assert config.tunnel_url == ""  # the agent's built-in tunnel URL
     assert config.tunnel_idle_timeout == 120
     assert config.tunnel_hard_cap == 3600
+    assert config.ping_interval == 50
+    assert config.tunnel_silence_timeout == 120
 
 
 def test_unknown_fields_are_ignored_at_every_level():

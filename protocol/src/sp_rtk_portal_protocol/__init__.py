@@ -46,6 +46,7 @@ from sp_rtk_portal_protocol.tunnel import (
     TunnelClosed,
 )
 from sp_rtk_portal_protocol.version import (
+    HOLDING_VERSION,
     PROTOCOL_VERSION,
     VERSION_HEADER,
     version_from_header,
@@ -56,6 +57,7 @@ __all__ = [
     "CHECK_IN_PATH",
     "CLAIMS_PATH",
     "CLAIM_TOKEN_PATH",
+    "HOLDING_VERSION",
     "MAX_CLOCK_SKEW",
     "POLL_PATH",
     "PROTOCOL_VERSION",
