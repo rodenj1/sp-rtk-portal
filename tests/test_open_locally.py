@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator
 import pytest
 from sp_rtk_portal_protocol import LanAddress
 
-from .harness.agent import RunningAgent, running_agent
+from .harness.agent import POLLING_VERSION, RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
 from .harness.pages import base_card
 from .harness.portal import CLIENT_IP, Browser, Portal
@@ -34,7 +34,7 @@ async def operator(browser: Browser, authentik: FakeAuthentik) -> Browser:
 @pytest.fixture
 async def agent(portal: Portal, operator: Browser) -> AsyncIterator[RunningAgent]:
     """A Claimed base behind another public IP than the operator's."""
-    async with running_agent(portal) as a:
+    async with running_agent(portal, protocol_version=POLLING_VERSION) as a:
         await a.claim(operator)
         yield a
 
@@ -55,7 +55,9 @@ def _order(card: dict[str, list[str]]) -> list[str]:
 async def test_behind_the_bases_public_ip_open_locally_comes_first(
     portal: Portal, operator: Browser
 ):
-    async with running_agent(portal, ip=CLIENT_IP) as agent:
+    async with running_agent(
+        portal, ip=CLIENT_IP, protocol_version=POLLING_VERSION
+    ) as agent:
         await agent.claim(operator)
 
         card = await _card(operator, agent)

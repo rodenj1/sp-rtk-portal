@@ -37,9 +37,13 @@ class Wired:
 
 @pytest.fixture
 async def base(portal: Portal, operator: Browser) -> AsyncIterator[Wired]:
-    """A Claimed base whose agent has Checked in and polled once, over the
-    wire."""
-    async with wire(portal) as w, running_agent(portal, transport=w.transport) as a:
+    """A Claimed polling base (protocol version 1; a version 2 one polls
+    only once it fell back, see ``test_fallback``) whose agent has Checked in
+    and polled once, over the wire."""
+    async with (
+        wire(portal) as w,
+        running_agent(portal, transport=w.transport, protocol_version=1) as a,
+    ):
         await a.claim(operator)
         yield Wired(a, w)
 
