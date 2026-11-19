@@ -57,6 +57,13 @@ class AgentTime:
     def end(self) -> None:
         self._busy -= 1
 
+    async def done(self) -> None:
+        """Wait (real time) until nothing the agent started is in flight."""
+        loop = asyncio.get_running_loop()
+        give_up = loop.time() + 10
+        while self._busy and loop.time() < give_up:
+            await asyncio.sleep(0.001)
+
     async def sleep(self, seconds: float) -> None:
         sleeper = _Sleeper(
             self.clock.now() + timedelta(seconds=seconds),

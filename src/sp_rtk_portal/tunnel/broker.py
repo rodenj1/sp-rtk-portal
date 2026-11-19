@@ -18,9 +18,11 @@ All of it is process-local state (the Portal is a single instance, ADR
   Remote session.
 - **Control messages.** A held tunnel carries what polls and Check-ins
   carry for a polling base (ticket #205): the agent's Check-ins come in on
-  it (``on_check_in``), and the broker sends the agent a
+  it (``on_check_in``, each answered as over HTTPS), and the broker sends
+  the agent a
   :class:`~sp_rtk_portal_protocol.TunnelUpdate` (agent config, metered,
-  notices, live Remote sessions) when it connects and on every change
+  notices, live Remote sessions) in answer to each Check-in (the agent
+  sends one on connect) and on every change
   (:meth:`TunnelBroker.push`), and each Remote session's end. Anything the
   tunnel receives is a sign of life: the base's last-seen advances (at most
   every :data:`SEEN_EVERY`, so with each ping).
@@ -323,6 +325,7 @@ class TunnelBroker:
                 raise FrameError(str(exc)) from None
             if held and isinstance(message, CheckIn) and on_check_in is not None:
                 await on_check_in(message)
+                await self.push(base_id)  # its answer, as an HTTPS Check-in's
 
         tunnel = Tunnel(websocket.send_bytes, role="portal", on_control=on_control)
         now = self._clock.now()
@@ -345,9 +348,9 @@ class TunnelBroker:
                 # Woken, but every Remote session ended meanwhile.
                 await self._close_tunnel(attached)
             if held:
+                # The answer to its first Check-in brings the rest.
                 for session in self.recent_ends(base_id):
                     await self._tell(attached, as_ended(session))
-                await self.push(base_id)
             while not attached.closing:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":

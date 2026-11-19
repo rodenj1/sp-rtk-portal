@@ -50,7 +50,14 @@ from sp_rtk_base.portal_agent.client import (
 )
 from sp_rtk_base.portal_agent.control import PortalAgent, serve
 from sp_rtk_base.portal_agent.protocol import AgentStatus
-from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
+from sp_rtk_portal_protocol import (
+    PROTOCOL_VERSION,
+    BaseKey,
+    CheckIn,
+    LanAddress,
+    TunnelUpdate,
+    read_control,
+)
 from sp_rtk_portal_protocol.tunnel import Kind
 from websockets.asyncio.client import connect as ws_connect
 
@@ -119,21 +126,29 @@ class _RecordedWebSocket:
     """The agent's tunnel websocket, noting each frame in ``agent.frames``.
 
     A ``PING`` counts as the agent's work in flight until its ``PONG`` comes
-    back (:meth:`AgentTime.begin`): the Portal has handled it (its last-seen
-    write included) before virtual time moves on, as it would in real time
-    50 s later.
+    back (:meth:`AgentTime.begin`), and a Check-in until the Portal's answer
+    (a ``TunnelUpdate``): the Portal has handled it (its database writes
+    included) before virtual time moves on, as it would in real time.
     """
 
     def __init__(self, ws: Any, agent: RunningAgent) -> None:
         self.ws = ws
         self._agent = agent
-        self._unanswered = 0
+        self._unanswered = {Kind.PING: 0, Kind.CONTROL: 0}
 
-    def _answered(self, pings: int) -> None:
-        pings = min(pings, self._unanswered)
-        self._unanswered -= pings
-        for _ in range(pings):
-            self._agent.time.end()
+    def _asked(self, kind: Kind) -> None:
+        self._unanswered[kind] += 1
+        self._agent.time.begin()
+
+    def _answered(self, kind: Kind | None = None) -> None:
+        """One ``kind`` answered (a ``PONG``, a control message), or every
+        one of either (``None``: no answer is coming now)."""
+        for asked in (kind,) if kind is not None else tuple(self._unanswered):
+            answers = 1 if kind is not None else self._unanswered[asked]
+            answers = min(answers, self._unanswered[asked])
+            self._unanswered[asked] -= answers
+            for _ in range(answers):
+                self._agent.time.end()
 
     def _note(self, message: bytes | str, sent: bool) -> None:
         if isinstance(message, bytes) and message:
@@ -146,23 +161,32 @@ class _RecordedWebSocket:
     async def send(self, message: bytes) -> None:
         self._note(message, sent=True)
         if message[:1] == bytes([Kind.PING]):
-            self._unanswered += 1
-            self._agent.time.begin()
+            self._asked(Kind.PING)
+        elif message[:1] == bytes([Kind.CONTROL]) and isinstance(
+            read_control(message[5:]), CheckIn
+        ):
+            self._asked(Kind.CONTROL)
         await self.ws.send(message)
 
     async def recv(self) -> bytes | str:
         try:
             message = await self.ws.recv()
         except BaseException:
-            self._answered(self._unanswered)  # no PONG is coming now
+            self._answered()  # no answer is coming now
             raise
         self._note(message, sent=False)
         if isinstance(message, bytes) and message[:1] == bytes([Kind.PONG]):
-            self._answered(1)
+            self._answered(Kind.PING)
+        elif (
+            isinstance(message, bytes)
+            and message[:1] == bytes([Kind.CONTROL])
+            and isinstance(read_control(message[5:]), TunnelUpdate)
+        ):
+            self._answered(Kind.CONTROL)
         return message
 
     async def close(self) -> None:
-        self._answered(self._unanswered)
+        self._answered()
         await self.ws.close()
 
 
@@ -319,12 +343,17 @@ class RunningAgent:
         return await read_status(self.sock)
 
     async def pause(self) -> AgentStatus:
-        """The local page's "Pause remote access" (tells the Portal at once)."""
-        return await pause(self.sock)
+        """The local page's "Pause remote access" (tells the Portal at once,
+        and the Portal has heard it on return)."""
+        status = await pause(self.sock)
+        await self.time.done()
+        return status
 
     async def resume(self) -> AgentStatus:
         """The local page's "Resume remote access"."""
-        return await resume(self.sock)
+        status = await resume(self.sock)
+        await self.time.done()
+        return status
 
     async def unclaim(self) -> AgentStatus:
         """The local page's Un-claim."""
