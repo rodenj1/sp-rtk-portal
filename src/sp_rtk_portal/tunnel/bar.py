@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from sp_rtk_portal_protocol import MODE_POLLING
+
 from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.bases import online, store
 from sp_rtk_portal.context import PortalContext
@@ -55,7 +57,7 @@ def labels(base_name: str) -> dict[str, str]:
 def holds(base: store.BaseSummary) -> bool:
     """The base holds its tunnel (or is getting it back): it comes back by
     itself, never through a Wake."""
-    return base.connection_mode != "polling"
+    return base.connection_mode != MODE_POLLING
 
 
 def last_seen(base: store.BaseSummary) -> str:
@@ -87,7 +89,7 @@ async def status(ctx: PortalContext, session: RemoteSession) -> dict[str, Any]:
             message["lease_expires_at"] = session.lease_expires_at.isoformat()
     if base is not None:
         message["last_seen"] = last_seen(base)
-        message["connection"] = online.connection(base, config)
+        message["connection"] = online.connection_mode_words(base, config)
         message["holds"] = holds(base)
     return message
 

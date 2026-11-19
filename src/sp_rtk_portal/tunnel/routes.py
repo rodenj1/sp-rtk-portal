@@ -140,7 +140,7 @@ async def session_bar(
         labels=bar.labels(base.name),
         poll_interval=online.interval(config, base.metered),
         last_seen=bar.last_seen(base),
-        connection=online.connection(base, config),
+        connection=online.connection_mode_words(base, config),
         holds=bar.holds(base),
         local_access=local.local_access(
             base.lan_addresses,

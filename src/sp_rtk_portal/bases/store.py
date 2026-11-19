@@ -6,10 +6,11 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Literal
 
+from sp_rtk_portal_protocol import MODE_POLLING, ConnectionMode
+
 from sp_rtk_portal.db import Connection
 
 Role = Literal["operator", "shared"]
-ConnectionMode = Literal["holding", "reconnecting", "polling"]
 OPERATOR: Role = "operator"
 SHARED: Role = "shared"
 
@@ -32,7 +33,7 @@ class BaseSummary:
     possible_copy_ips: list[str] = field(default_factory=list)
     remote_paused: bool = False
     """Remote access paused on site: Open remotely is refused."""
-    connection_mode: ConnectionMode = "polling"
+    connection_mode: ConnectionMode = MODE_POLLING
     """How the Portal last reached it (see :mod:`.presence`)."""
     role: Role = "operator"
     """How the reader reaches it: their own Claim, or a Share."""
@@ -96,6 +97,12 @@ async def reachable_by(
     )
     row = await cur.fetchone()
     return BaseSummary(**row) if row else None
+
+
+async def every_base(conn: Connection) -> list[BaseSummary]:
+    """Every Claimed base."""
+    cur = await conn.execute(f"SELECT {_COLUMNS} FROM base")
+    return [BaseSummary(**row) for row in await cur.fetchall()]
 
 
 async def by_id(conn: Connection, base_id: str) -> BaseSummary | None:

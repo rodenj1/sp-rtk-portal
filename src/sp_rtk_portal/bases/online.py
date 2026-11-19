@@ -19,7 +19,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Literal
 
-from sp_rtk_portal_protocol import AgentConfig
+from sp_rtk_portal_protocol import MODE_HOLDING, MODE_RECONNECTING, AgentConfig
 
 from sp_rtk_portal.bases.store import BaseSummary
 
@@ -44,7 +44,7 @@ def interval(config: AgentConfig, metered: bool) -> int:
 
 
 def offline_after(base: BaseSummary, config: AgentConfig) -> timedelta:
-    if base.connection_mode == "reconnecting":
+    if base.connection_mode == MODE_RECONNECTING:
         return HELD_GRACE
     beat = max(interval(config, base.metered), interval(config, base.polled_metered))
     return timedelta(seconds=MISSED_BEATS * beat)
@@ -55,7 +55,7 @@ def state(base: BaseSummary, config: AgentConfig, now: datetime) -> State:
         return "needs-upgrade"  # not offline: it asks once a day
     if base.last_seen_at is None:
         return "never-seen"
-    if base.connection_mode != "holding" and (
+    if base.connection_mode != MODE_HOLDING and (
         now - base.last_seen_at > offline_after(base, config)
     ):
         return "offline"
@@ -64,11 +64,16 @@ def state(base: BaseSummary, config: AgentConfig, now: datetime) -> State:
     return "online"
 
 
-def connection(base: BaseSummary, config: AgentConfig) -> str:
+def is_online(base: BaseSummary, config: AgentConfig, now: datetime) -> bool:
+    """Online, paused or not."""
+    return state(base, config, now) in ("online", "paused")
+
+
+def connection_mode_words(base: BaseSummary, config: AgentConfig) -> str:
     """How the Portal reaches the base (its connection mode), in words."""
-    if base.connection_mode == "holding":
+    if base.connection_mode == MODE_HOLDING:
         return "Holding its tunnel"
-    if base.connection_mode == "reconnecting":
+    if base.connection_mode == MODE_RECONNECTING:
         return "Reconnecting its tunnel"
     mode = f"Polling every {interval(config, base.metered)} s"
     return mode + " (metered)" if base.metered else mode

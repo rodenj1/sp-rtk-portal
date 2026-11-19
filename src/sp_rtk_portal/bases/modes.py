@@ -2,10 +2,10 @@
 (ticket #209), so the homelab owner notices if the fallback to polling
 becomes common.
 
-``count`` counts online bases by connection mode (:mod:`.online`'s rules:
-a holding base while its tunnel is connected, a reconnecting one for the
-grace period after its last sign of life, a polling one until it misses 3
-beats); every other Claimed base is offline. ``ModeCounter`` logs it at
+``count`` counts online bases by connection mode, by :mod:`.online`'s own
+rules (a holding base while its tunnel is connected, a reconnecting one for
+the grace period after its last sign of life, a polling one until it misses
+3 beats); every other Claimed base is offline. ``ModeCounter`` logs it at
 startup and then every ``Settings.mode_count_interval`` seconds (real time;
 online state is measured on the Portal's clock).
 """
@@ -15,21 +15,19 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
 
+from sp_rtk_portal_protocol import MODE_HOLDING, MODE_POLLING, MODE_RECONNECTING
+
 from sp_rtk_portal.agent_api import config as agent_config
-from sp_rtk_portal.bases.online import HELD_GRACE, MISSED_BEATS
+from sp_rtk_portal.bases import online, store
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Connection, Database
 
 log = logging.getLogger(__name__)
-
-_BEAT = (
-    "greatest(CASE WHEN metered THEN %(metered)s ELSE %(plain)s END,"
-    " CASE WHEN polled_metered THEN %(metered)s ELSE %(plain)s END)"
-)
 
 
 @dataclass(frozen=True)
@@ -42,32 +40,19 @@ class Modes:
 
 async def count(conn: Connection, settings: Settings, now: datetime) -> Modes:
     config = await agent_config.current(conn, settings)
-    cur = await conn.execute(
-        "SELECT"
-        " count(*) FILTER (WHERE online AND connection_mode = 'holding')"
-        "  AS holding,"
-        " count(*) FILTER (WHERE online AND connection_mode = 'polling')"
-        "  AS polling,"
-        " count(*) FILTER (WHERE online AND connection_mode = 'reconnecting')"
-        "  AS reconnecting,"
-        " count(*) FILTER (WHERE NOT online) AS offline"
-        " FROM (SELECT connection_mode, NOT needs_upgrade"
-        "  AND last_seen_at IS NOT NULL AND (connection_mode = 'holding'"
-        "   OR (connection_mode = 'reconnecting' AND last_seen_at > %(grace)s)"
-        f"   OR (connection_mode = 'polling' AND last_seen_at > %(now)s"
-        f"       - make_interval(secs => %(beats)s * {_BEAT})))"
-        "  AS online FROM base) AS bases",
-        {
-            "now": now,
-            "grace": now - HELD_GRACE,
-            "beats": MISSED_BEATS,
-            "metered": config.metered_poll_interval,
-            "plain": config.poll_interval,
-        },
+    online_by_mode = Counter[str]()
+    offline = 0
+    for base in await store.every_base(conn):
+        if online.is_online(base, config, now):
+            online_by_mode[base.connection_mode] += 1
+        else:
+            offline += 1
+    return Modes(
+        holding=online_by_mode[MODE_HOLDING],
+        polling=online_by_mode[MODE_POLLING],
+        reconnecting=online_by_mode[MODE_RECONNECTING],
+        offline=offline,
     )
-    row = await cur.fetchone()
-    assert row is not None
-    return Modes(**row)
 
 
 class ModeCounter:

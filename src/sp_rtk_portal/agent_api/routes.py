@@ -39,7 +39,7 @@ from sp_rtk_portal.agent_api.auth import (
 from sp_rtk_portal.bases import claims, copies, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.db import Connection
-from sp_rtk_portal.tunnel.broker import as_ended, as_live
+from sp_rtk_portal.tunnel.broker import as_ended
 from sp_rtk_portal.tunnel.end_reason import EndReason
 from sp_rtk_portal.web.client_ip import rate_key
 
@@ -179,9 +179,7 @@ async def poll(
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
     tunnels = ctx.tunnels
-    sessions = (
-        [] if paused else [as_live(s) for s in tunnels.live_sessions(seen.base_id)]
-    )
+    sessions = tunnels.reported_sessions(seen.base_id, paused=paused)
     return reply(
         PollReply(
             config=config,

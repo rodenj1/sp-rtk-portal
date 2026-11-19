@@ -39,7 +39,7 @@ async def base_list(
             base=base,
             state=(state := online.state(base, config, now)),
             state_label=online.LABELS[state],
-            connection=online.connection(base, config),
+            connection=online.connection_mode_words(base, config),
             update=latest
             if agent_config.update_available(base.software_version, latest)
             else None,

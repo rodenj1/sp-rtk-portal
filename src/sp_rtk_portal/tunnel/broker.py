@@ -89,23 +89,24 @@ from datetime import datetime, timedelta
 from typing import Literal
 
 from sp_rtk_portal_protocol import (
+    MODE_POLLING,
     CheckIn,
     EndedSession,
     FrameError,
     LiveSession,
     Message,
-    MessageError,
     Stream,
     Tunnel,
     TunnelClosed,
     TunnelUpdate,
     control_message,
-    read_control,
+    read_control_frame,
 )
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.bases import online, presence
+from sp_rtk_portal.bases import store as base_store
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
@@ -395,10 +396,7 @@ class TunnelBroker:
         open. A held tunnel's Check-ins go to ``on_check_in``."""
 
         async def on_control(payload: bytes) -> None:
-            try:
-                message = read_control(payload)
-            except MessageError as exc:
-                raise FrameError(str(exc)) from None
+            message = read_control_frame(payload)
             if held and isinstance(message, CheckIn) and on_check_in is not None:
                 await on_check_in(message)
                 await self.push(base_id)  # its answer, as an HTTPS Check-in's
@@ -487,18 +485,14 @@ class TunnelBroker:
         async with self._db.connection() as conn:
             config = await agent_config.current(conn, self._settings)
             notices = await agent_config.wire_notices(conn)
-            cur = await conn.execute(
-                "SELECT metered, remote_paused FROM base WHERE id = %s", (base_id,)
-            )
-            row = await cur.fetchone()
-        paused = bool(row and row["remote_paused"])
+            base = await base_store.by_id(conn, base_id)
         return TunnelUpdate(
             config=config,
-            metered=bool(row and row["metered"]),
+            metered=bool(base and base.metered),
             notices=notices,
-            sessions=[]
-            if paused
-            else [as_live(s) for s in self.live_sessions(base_id)],
+            sessions=self.reported_sessions(
+                base_id, paused=bool(base and base.remote_paused)
+            ),
         )
 
     async def _tell(self, attached: _Attached, message: Message) -> None:
@@ -527,6 +521,11 @@ class TunnelBroker:
     def live_sessions(self, base_id: str) -> list[RemoteSession]:
         """The base's live Remote sessions, oldest first."""
         return sorted(self._live(base_id), key=lambda s: (s.started_at, s.id))
+
+    def reported_sessions(self, base_id: str, *, paused: bool) -> list[LiveSession]:
+        """The base's live Remote sessions as its agent hears of them: none
+        while remote access is paused on it."""
+        return [] if paused else [as_live(s) for s in self.live_sessions(base_id)]
 
     def session_for(self, account_id: int, base_id: str) -> RemoteSession | None:
         for session in self._sessions.values():
@@ -601,16 +600,12 @@ class TunnelBroker:
         back by itself."""
         async with self._db.connection() as conn:
             config = await agent_config.current(conn, self._settings)
-            cur = await conn.execute(
-                "SELECT metered, connection_mode FROM base WHERE id = %s",
-                (base_id,),
-            )
-            row = await cur.fetchone()
+            base = await base_store.by_id(conn, base_id)
         kind: AttemptKind
-        if row is None or row["connection_mode"] == "polling":
+        if base is None or base.connection_mode == MODE_POLLING:
             self.wake(base_id)
             kind = "waking" if opening else "reconnecting"
-            beat = online.interval(config, bool(row and row["metered"]))
+            beat = online.interval(config, bool(base and base.metered))
             wait = timedelta(seconds=beat) + WAKE_GRACE
         elif opening:
             kind, wait = "connecting", WAKE_GRACE
