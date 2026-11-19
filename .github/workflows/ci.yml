@@ -133,7 +133,10 @@ jobs:
   # ------------------------------------------------------------------
   test:
     name: Test (Python 3.12)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright 1.60 can't
+    # install browsers on.  Return to ubuntu-latest once Playwright
+    # supports it.
+    runs-on: ubuntu-24.04
     needs: lint
     defaults:
       run:
