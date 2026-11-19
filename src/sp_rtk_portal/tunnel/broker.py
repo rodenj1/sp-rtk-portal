@@ -492,6 +492,7 @@ class TunnelBroker:
                     (account_id, base_id),
                 )
                 user = await cur.fetchone()
+                lease = timedelta(seconds=config.lease_length)
                 session_id = await store.started(
                     conn,
                     account_id=account_id,
@@ -499,6 +500,7 @@ class TunnelBroker:
                     token=token,
                     now=now,
                     ip=ip,
+                    lease_expires_at=now + lease,
                 )
             session = RemoteSession(
                 id=session_id,
@@ -513,13 +515,15 @@ class TunnelBroker:
                 left_at=now,
                 who=user["email"] if user else "",
                 shared=bool(user and user["shared"]),
-                lease=timedelta(seconds=config.lease_length),
+                lease=lease,
+                lease_expires_at=now + lease,
                 lease_renewal=timedelta(seconds=config.lease_renewal_interval),
             )
             self._sessions[session.id] = session
             log.info("Remote session %s started on base %s", session.id, base_id)
             await self.push(base_id)
-        self.renew(session)
+        else:
+            await self.renew(session)
         if not self.tunnel_up(base_id):
             attempt = self._attempts.get(base_id)
             if attempt is None or attempt.deadline <= self._clock.now():
@@ -570,12 +574,15 @@ class TunnelBroker:
             s for s in self._ends.get(base_id, []) if s.ended_at and s.ended_at > since
         ]
 
-    def renew(self, session: RemoteSession) -> None:
-        """A fresh lease for the session's path token (not once it ended)."""
+    async def renew(self, session: RemoteSession) -> None:
+        """A fresh lease for the session's path token (not once it ended),
+        recorded on the session's row."""
         if session.ended:
             return
         session.lease_expires_at = self._clock.now() + session.lease
         session.renewal_asked_at = None
+        async with self._db.connection() as conn:
+            await store.leased(conn, session.id, session.lease_expires_at)
 
     def renewal_due(self, session: RemoteSession) -> bool:
         """Its Session bars should renew the lease now."""
@@ -632,7 +639,7 @@ class TunnelBroker:
         """A Session bar's status channel is open on ``session``."""
         session.attendants += 1
         session.left_at = None
-        self.renew(session)
+        await self.renew(session)
         if ip:
             session.ip = ip
         if session.attendants == 1:

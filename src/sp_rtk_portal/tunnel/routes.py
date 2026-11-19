@@ -211,7 +211,7 @@ async def _receive(
             if message["type"] == "websocket.disconnect":
                 return
             if _is_renewal(message.get("text")):
-                ctx.tunnels.renew(session)
+                await ctx.tunnels.renew(session)
                 renewed.put_nowait(None)
 
 

@@ -22,11 +22,13 @@ async def started(
     token: str,
     now: datetime,
     ip: str | None,
+    lease_expires_at: datetime,
 ) -> int:
     cur = await conn.execute(
         "INSERT INTO remote_session (account_id, base_id, token_hash, started_at,"
-        " last_activity_at, ip) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
-        (account_id, base_id, token_hash(token), now, now, ip),
+        " last_activity_at, ip, lease_expires_at)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+        (account_id, base_id, token_hash(token), now, now, ip, lease_expires_at),
     )
     row = await cur.fetchone()
     assert row is not None
@@ -40,6 +42,15 @@ async def started(
         detail={"remote_session": row["id"]},
     )
     return int(row["id"])
+
+
+async def leased(conn: Connection, session_id: int, expires_at: datetime) -> None:
+    """The Remote session's path token has a fresh lease, to ``expires_at``."""
+    await conn.execute(
+        "UPDATE remote_session SET lease_expires_at = %s"
+        " WHERE id = %s AND ended_at IS NULL",
+        (expires_at, session_id),
+    )
 
 
 async def ended(
