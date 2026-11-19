@@ -64,16 +64,11 @@ def state(base: BaseSummary, config: AgentConfig, now: datetime) -> State:
     return "online"
 
 
-def wake_mode(base: BaseSummary, config: AgentConfig) -> str:
-    """How a Wake reaches the base, in words."""
-    mode = f"Polling every {interval(config, base.metered)} s"
-    return mode + " (metered)" if base.metered else mode
-
-
 def connection(base: BaseSummary, config: AgentConfig) -> str:
-    """How the Portal reaches the base, in words."""
+    """How the Portal reaches the base (its connection mode), in words."""
     if base.connection_mode == "holding":
         return "Holding its tunnel"
     if base.connection_mode == "reconnecting":
         return "Reconnecting its tunnel"
-    return wake_mode(base, config)
+    mode = f"Polling every {interval(config, base.metered)} s"
+    return mode + " (metered)" if base.metered else mode

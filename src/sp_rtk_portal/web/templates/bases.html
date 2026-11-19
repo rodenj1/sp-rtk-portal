@@ -23,6 +23,9 @@
       <span class="name" data-field="name">{{ base.name }}</span>
       {% if base.role == "shared" %}<span class="role" data-field="shared">Shared</span>{% endif %}
       <span class="state state-{{ card.state }}" data-field="state">{{ card.state_label }}</span>
+      {% if card.state in ("online", "paused") %}
+      <span class="mode" data-field="connection">{{ card.connection }}</span>
+      {% endif %}
       {% if base.last_seen_at %}
       <span class="seen">last seen <time data-field="last-seen" datetime="{{ base.last_seen_at.isoformat() }}">{{ base.last_seen_at | utc }} UTC</time></span>
       {% endif %}
@@ -35,8 +38,6 @@
         {% if card.update %}· <span class="info" data-field="update">sp-rtk-base {{ card.update }} available</span>{% endif %}
       </dd>
       {% endif %}
-      <dt>Connection</dt>
-      <dd data-field="connection">{{ card.connection }}</dd>
       {% if base.lan_addresses %}
       <dt>LAN</dt>
       <dd><ul class="lan">

@@ -283,9 +283,13 @@ async def test_a_tunnel_open_without_a_nonce_is_refused_from_v1_unclaimed_or_for
 
 
 async def card(operator: Browser, base_id: str) -> tuple[str, str]:
-    """The base list's online state and connection for the base."""
+    """The base list's online state and, next to it, its connection mode
+    (``""``: none shown, as for an offline base)."""
     found = base_card((await operator.get("/")).text, base_id)
-    return found["state"][0], found["connection"][0]
+    shown = [f for f in found if not f.startswith("@")]
+    if "connection" in found:
+        assert shown[shown.index("state") + 1] == "connection"  # next to it
+    return found["state"][0], found.get("connection", [""])[0]
 
 
 async def test_a_holding_base_is_online_while_connected_and_2_min_after_a_drop(
@@ -311,7 +315,7 @@ async def test_a_holding_base_is_online_while_connected_and_2_min_after_a_drop(
     portal.clock.advance(seconds=120)
     assert await card(operator, base_id) == ("Online", "Reconnecting its tunnel")
     portal.clock.advance(seconds=1)
-    assert (await card(operator, base_id))[0] == "Offline"
+    assert await card(operator, base_id) == ("Offline", "")
 
 
 # --- Version 1 agents ----------------------------------------------------------------
