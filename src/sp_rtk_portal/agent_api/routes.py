@@ -150,7 +150,7 @@ async def poll(
     live Remote sessions (for its local Portal page).
 
     A poll saying ``paused`` (remote access paused on site) ends the base's
-    live Remote sessions and closes its tunnel. A pending Wake is still
+    live Remote sessions; a held tunnel stays open. A pending Wake is still
     sent: the agent is the one that ignores it, whatever the Portal does.
     """
     msg = req.message(Poll)
@@ -209,9 +209,10 @@ async def _audit_pause(
 
 
 async def _cut_paused(ctx: PortalContext, base_id: str) -> None:
-    """Remote access is paused on site: its Remote sessions end and its
-    tunnel closes (before the pause is recorded, as on Un-claim)."""
-    await ctx.tunnels.end_for_base(base_id, EndReason.PAUSED)
+    """Remote access is paused on site: its Remote sessions end (before the
+    pause is recorded, as on Un-claim). A held tunnel stays open, so the
+    base stays online; its agent refuses every stream while paused."""
+    await ctx.tunnels.end_for_base(base_id, EndReason.PAUSED, keep_held=True)
 
 
 def _live_sessions(ctx: PortalContext, base_id: str) -> list[LiveSession]:
