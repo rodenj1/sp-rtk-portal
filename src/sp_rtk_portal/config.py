@@ -80,6 +80,10 @@ class Settings:
     # Refused tunnel opens (bad proof, forged or replayed Wake) per IP; past
     # it, opens from that IP are refused unread for the rest of the hour.
     tunnel_refusals_per_ip: int = 30
+    # Admission (#206): tunnel opens admitted per second, from all bases;
+    # above it, opens get 503 with a random 10-60 s Retry-After, so that a
+    # restart doesn't bring every base back at once.
+    tunnel_opens_per_second: int = 100
     # Above max_shared_users_per_base: one base can be filled in a sitting.
     shares_per_operator: int = 30
     rate_limit_period: timedelta = timedelta(hours=1)
@@ -141,6 +145,7 @@ class Settings:
                     "wrong_codes_overall",
                     "shares_per_operator",
                     "tunnel_refusals_per_ip",
+                    "tunnel_opens_per_second",
                 )
                 if f"PORTAL_{name.upper()}" in env
             },

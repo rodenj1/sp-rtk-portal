@@ -7,10 +7,12 @@ import asyncio
 import contextlib
 import json
 import logging
+import random
 from dataclasses import dataclass
+from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Request, WebSocket
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 from sp_rtk_portal_protocol import (
     HOLDING_VERSION,
@@ -41,6 +43,8 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 POLICY_VIOLATION = 1008
+BUSY_RETRY_AFTER = (10, 60)
+"""The range a 503's random ``Retry-After`` is drawn from (seconds)."""
 
 PAUSED_MESSAGE = (
     "Remote access is paused on this base. Someone at the base can resume it"
@@ -235,8 +239,20 @@ async def agent_tunnel(websocket: WebSocket) -> None:
     """An agent opens its tunnel: a GET signed with its base key. A Claimed
     base on protocol version 2 or later signs it with no nonce, to hold it
     open (ADR 0006); otherwise the proof echoes a Wake nonce. Anything else
-    is refused (HTTP 403) before the websocket is accepted."""
+    is refused (HTTP 403) before the websocket is accepted.
+
+    Opens are admitted at ``tunnel_opens_per_second`` from all bases
+    together; above that the Portal answers 503 with a random
+    ``Retry-After`` (:data:`BUSY_RETRY_AFTER`) before reading anything, so
+    the bases a restart dropped come back spread out."""
     ctx: PortalContext = websocket.app.state.portal
+    if _too_many_opens(ctx):
+        retry_after = random.randint(*BUSY_RETRY_AFTER)
+        log.debug("turned a tunnel open away: busy, retry after %ss", retry_after)
+        await websocket.send_denial_response(
+            Response(status_code=503, headers={"Retry-After": str(retry_after)})
+        )
+        return
     opened = await _admitted(websocket, ctx)
     if opened is None:
         await websocket.close(code=POLICY_VIOLATION)
@@ -259,6 +275,17 @@ async def agent_tunnel(websocket: WebSocket) -> None:
     await ctx.tunnels.serve_tunnel(
         opened.base_id, websocket, held=opened.held, on_check_in=on_check_in
     )
+
+
+def _too_many_opens(ctx: PortalContext) -> bool:
+    """Admission: has the Portal let in its tunnel opens for this second?"""
+    wait = ctx.limits.take(
+        "tunnel-open",
+        "all",
+        limit=ctx.settings.tunnel_opens_per_second,
+        period=timedelta(seconds=1),
+    )
+    return wait is not None
 
 
 async def _admitted(websocket: WebSocket, ctx: PortalContext) -> _Open | None:
