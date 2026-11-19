@@ -52,6 +52,21 @@ class AgentTime:
         finally:
             self._busy -= 1
 
+    def begin(self) -> None:
+        """Like :meth:`working`, for work that ends elsewhere (a ping, until
+        its pong): call :meth:`end` once it's done."""
+        self._busy += 1
+
+    def end(self) -> None:
+        self._busy -= 1
+
+    async def done(self) -> None:
+        """Wait (real time) until nothing the agent started is in flight."""
+        loop = asyncio.get_running_loop()
+        give_up = loop.time() + 10
+        while self._busy and loop.time() < give_up:
+            await asyncio.sleep(0.001)
+
     def serving(self) -> None:
         """The current task now serves a tunnel until it closes (the agent
         holding its tunnel): once woken, it isn't waited for to sleep

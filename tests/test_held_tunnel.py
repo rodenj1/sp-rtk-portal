@@ -235,8 +235,11 @@ async def refused(opening: Awaitable[object]) -> int:
 
 
 async def closes(ws: ClientConnection) -> bool:
+    """The Portal closes ``ws`` (passing over its control messages)."""
     with pytest.raises(ConnectionClosed):
-        await asyncio.wait_for(ws.recv(), 5)
+        while True:
+            message = await asyncio.wait_for(ws.recv(), 5)
+            assert isinstance(message, bytes) and message[0] == Kind.CONTROL
     return True
 
 

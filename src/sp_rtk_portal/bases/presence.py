@@ -173,6 +173,15 @@ async def tunnel_held(conn: Connection, base_id: str, now: datetime) -> None:
     )
 
 
+async def heard(conn: Connection, base_id: str, now: datetime) -> None:
+    """The base's held tunnel carried something (a ping, a Check-in): it's
+    seen now."""
+    await conn.execute(
+        "UPDATE base SET last_seen_at = greatest(last_seen_at, %s) WHERE id = %s",
+        (now, base_id),
+    )
+
+
 async def tunnel_dropped(conn: Connection, base_id: str, last_heard: datetime) -> None:
     """The base's held tunnel closed, last heard from at ``last_heard``:
     it's ``reconnecting`` (online for a grace period after that)."""

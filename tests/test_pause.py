@@ -16,7 +16,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime
 
 import pytest
-from sp_rtk_portal_protocol import CHECK_IN_PATH, CheckIn, Stream
+from sp_rtk_portal_protocol import CHECK_IN_PATH, CheckIn, Stream, read_control
+from sp_rtk_portal_protocol.tunnel import Kind
 from wsproto import ConnectionType, WSConnection
 from wsproto.events import AcceptConnection, Request
 
@@ -189,12 +190,22 @@ async def held(portal: Portal, agent: RunningAgent) -> str:
 
 
 def check_ins_since(agent: RunningAgent, since: datetime) -> int:
-    """Check-ins the Portal accepted from ``agent`` since ``since``."""
-    return sum(
+    """Check-ins ``agent`` sent since ``since``: on its held tunnel, or
+    accepted over HTTPS."""
+    on_tunnel = sum(
+        1
+        for f in agent.frames
+        if f.sent
+        and f.kind == Kind.CONTROL
+        and f.at > since
+        and isinstance(read_control(f.payload), CheckIn)
+    )
+    over_https = sum(
         1
         for r in agent.requests
         if r.path == CHECK_IN_PATH and r.status == 200 and r.at > since
     )
+    return on_tunnel + over_https
 
 
 async def read_all(stream: Stream) -> bytes:
@@ -314,7 +325,10 @@ async def test_the_agent_learns_who_is_connected_remotely_and_since_when(
     started = portal.clock.now()
 
     await operator.action(f"/bases/{base_id}/remote")
-    await agent.run(seconds=20)
 
+    async def told() -> bool:
+        return bool((await agent.status()).sessions)
+
+    await eventually(told, "the agent hears of it on its tunnel")
     [session] = (await agent.status()).sessions
     assert (session.who, session.since, session.shared) == (EMAIL, started, False)

@@ -18,6 +18,7 @@ from sp_rtk_portal_protocol import (
     HOLDING_VERSION,
     TUNNEL_PATH,
     VERSION_HEADER,
+    CheckIn,
     ProofError,
     proof_from_authorization,
     verify_proof,
@@ -28,6 +29,8 @@ from starlette.websockets import WebSocketDisconnect
 from sp_rtk_portal.accounts.deps import current_account, websocket_account
 from sp_rtk_portal.accounts.store import Account
 from sp_rtk_portal.agent_api import config as agent_config
+from sp_rtk_portal.agent_api.auth import AgentRefused
+from sp_rtk_portal.agent_api.routes import take_check_in
 from sp_rtk_portal.bases import local, online, store
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.tunnel import bar
@@ -227,6 +230,8 @@ class _Open:
     base_id: str
     held: bool
     """Opened to hold (no nonce), not on a Wake."""
+    thumbprint: str
+    version: int
 
 
 @router.websocket(TUNNEL_PATH)
@@ -252,7 +257,24 @@ async def agent_tunnel(websocket: WebSocket) -> None:
     if opened is None:
         await websocket.close(code=POLICY_VIOLATION)
         return
-    await ctx.tunnels.serve_tunnel(opened.base_id, websocket, held=opened.held)
+    ip = client_ip(websocket)
+
+    async def on_check_in(msg: CheckIn) -> None:
+        """A Check-in on the held tunnel, recorded as one over HTTPS."""
+        try:
+            await take_check_in(
+                ctx,
+                thumbprint=opened.thumbprint,
+                protocol_version=opened.version,
+                ip=ip,
+                msg=msg,
+            )
+        except AgentRefused as exc:
+            log.info("ignored a Check-in on base %s's tunnel: %s", opened.base_id, exc)
+
+    await ctx.tunnels.serve_tunnel(
+        opened.base_id, websocket, held=opened.held, on_check_in=on_check_in
+    )
 
 
 def _too_many_opens(ctx: PortalContext) -> bool:
@@ -319,10 +341,10 @@ async def _check_open(
                 version,
             )
             return None
-        return _Open(str(row["id"]), held=True)
+        return _Open(str(row["id"]), True, proof.thumbprint, version)
     if not ctx.tunnels.redeem(row["id"], proof.nonce):
         log.warning(
             "refused a tunnel open for base %s from %s: no such Wake", row["id"], ip
         )
         return None
-    return _Open(str(row["id"]), held=False)
+    return _Open(str(row["id"]), False, proof.thumbprint, version)

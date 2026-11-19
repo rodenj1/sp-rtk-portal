@@ -93,11 +93,12 @@ async def set_metered(
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
     """The Operator marks their base metered (it then polls every 60 s), or
-    not. The base learns it on its next poll."""
+    not. The base learns it on its held tunnel at once, or on its next poll."""
     async with ctx.db.connection() as conn:
         found = await store.set_metered(conn, base_id, account.id, body.metered)
     if not found:
         return JSONResponse({"error": "No such base."}, status_code=404)
+    await ctx.tunnels.push(base_id)
     return JSONResponse({"next": "/"})
 
 

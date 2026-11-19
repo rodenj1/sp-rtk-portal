@@ -9,6 +9,7 @@ must, so additive changes need no version bump) and raises
 from __future__ import annotations
 
 import dataclasses
+import json
 from dataclasses import dataclass
 from types import UnionType
 from typing import Any, ClassVar, TypeVar, Union, get_args, get_origin, get_type_hints
@@ -341,6 +342,9 @@ class CheckIn(Message):
     paused: bool | None = None
     """Remote access paused on site, as on a poll (``Poll.state``). ``None``:
     an agent from before this field, which says nothing either way."""
+    mode: str | None = None
+    """The agent's connection mode (``holding``, ``reconnecting`` or
+    ``polling``; protocol package 0.10.0). ``None`` from an older agent."""
 
 
 @dataclass(frozen=True)
@@ -361,3 +365,56 @@ class UpgradeRequired(Message):
     min_version: int
     message: str = ""
     error: str = "upgrade_required"
+
+
+# --- Control messages on a held tunnel (ADR 0006) ---------------------------
+#
+# A base holding its tunnel sends no polls or Check-ins: each side sends
+# control messages on the tunnel instead (a ``CONTROL`` frame each, see
+# :mod:`.tunnel`). The agent sends a :class:`CheckIn` on connect, every
+# ``check_in_interval`` and whenever its contents change; the Portal sends a
+# :class:`TunnelUpdate` on connect and whenever it changes, and a
+# :class:`EndedSession` for each Remote session that ends.
+
+
+@dataclass(frozen=True)
+class TunnelUpdate(Message):
+    """What a poll reply carries, minus the Wake: the agent config block,
+    the metered flag, the notices and the live Remote sessions. Each one is
+    the whole picture, replacing the last."""
+
+    config: AgentConfig
+    metered: bool = False
+    notices: list[Notice] = dataclasses.field(default_factory=list)
+    sessions: list[LiveSession] = dataclasses.field(default_factory=list)
+
+
+CONTROL_TYPES: dict[str, type[Message]] = {
+    "check_in": CheckIn,
+    "update": TunnelUpdate,
+    "session_ended": EndedSession,
+}
+"""Each control message's ``type``. A receiver ignores a type it doesn't
+know (a newer peer may add some)."""
+
+
+def control_message(message: Message) -> bytes:
+    """``message`` as a control frame's payload: its JSON with its ``type``."""
+    for name, cls in CONTROL_TYPES.items():
+        if type(message) is cls:
+            body = {"type": name, **message.to_json()}
+            return json.dumps(body, separators=(",", ":")).encode()
+    raise TypeError(f"{type(message).__name__} isn't a control message")
+
+
+def read_control(payload: bytes) -> Message | None:
+    """A control frame's message, or ``None`` for a type this side doesn't
+    know. Raises :class:`MessageError` for one that isn't a message."""
+    try:
+        body = json.loads(payload)
+    except ValueError:
+        raise MessageError("a control message that isn't JSON") from None
+    if not isinstance(body, dict) or not isinstance(body.get("type"), str):
+        raise MessageError("a control message without a type")
+    cls = CONTROL_TYPES.get(body["type"])
+    return cls.from_json(body) if cls is not None else None
