@@ -15,6 +15,7 @@ from types import UnionType
 from typing import (
     Any,
     ClassVar,
+    Final,
     Literal,
     TypeVar,
     Union,
@@ -352,12 +353,12 @@ class LanAddress(Message):
     """On the interface that holds the default route."""
 
 
-MODE_HOLDING = "holding"
+MODE_HOLDING: Final = "holding"
 """Connection mode: the agent holds its tunnel open (protocol version 2)."""
-MODE_RECONNECTING = "reconnecting"
+MODE_RECONNECTING: Final = "reconnecting"
 """Connection mode: a version 2 agent whose held tunnel isn't open (yet, or
 any more): it backs off and tries again."""
-MODE_POLLING = "polling"
+MODE_POLLING: Final = "polling"
 """Connection mode: the Portal reaches the base only by Waking it through
 its polls (a version 1 agent, or a version 2 agent that fell back)."""
 
