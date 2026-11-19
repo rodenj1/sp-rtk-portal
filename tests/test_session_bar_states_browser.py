@@ -284,6 +284,7 @@ async def test_a_holding_base_whose_ui_never_answers_shows_didnt_wake_after_15_s
     await h.open_remotely()
 
     await expect(h.locate("status")).to_have_text("Connected")
+    await eventually(lambda: bool(h.ui.seen), "the frame's request reaches the UI")
     await h.agent.run(seconds=14)
     await asyncio.sleep(0.2)
     await expect(h.locate("status")).to_have_text("Connected")

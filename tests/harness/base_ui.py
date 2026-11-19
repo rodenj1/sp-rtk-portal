@@ -77,7 +77,6 @@ class BaseUi:
             self._answering.clear()
 
     async def _page(self, request: Request) -> Response:
-        await self._answering.wait()
         body = await request.body()
         self.seen.append(
             Seen(
@@ -88,6 +87,7 @@ class BaseUi:
                 body,
             )
         )
+        await self._answering.wait()
         path = request.url.path
         response: Response
         if path == "/missing":
