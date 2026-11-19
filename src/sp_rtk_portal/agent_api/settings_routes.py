@@ -88,6 +88,7 @@ async def save_agent_config(
         await agent_config.save(
             conn, config, now=ctx.clock.now(), account_id=account.id
         )
+    await ctx.tunnels.push()  # bases holding their tunnel hear at once
     return JSONResponse({"next": "/settings"})
 
 
@@ -108,6 +109,7 @@ async def add_notice(
         )
     async with ctx.db.connection() as conn:
         await agent_config.add_notice(conn, text, ctx.clock.now())
+    await ctx.tunnels.push()  # bases holding their tunnel hear at once
     return JSONResponse({"next": "/settings"})
 
 
@@ -120,6 +122,7 @@ async def remove_notice(
     async with ctx.db.connection() as conn:
         if not await agent_config.remove_notice(conn, notice_id):
             return JSONResponse({"error": "No such notice."}, status_code=404)
+    await ctx.tunnels.push()  # bases holding their tunnel hear at once
     return JSONResponse({"next": "/settings"})
 
 

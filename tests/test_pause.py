@@ -218,7 +218,10 @@ async def test_the_agent_learns_who_is_connected_remotely_and_since_when(
     started = portal.clock.now()
 
     await operator.action(f"/bases/{base_id}/remote")
-    await agent.run(seconds=20)
 
+    async def told() -> bool:
+        return bool((await agent.status()).sessions)
+
+    await eventually(told, "the agent hears of it on its tunnel")
     [session] = (await agent.status()).sessions
     assert (session.who, session.since, session.shared) == (EMAIL, started, False)

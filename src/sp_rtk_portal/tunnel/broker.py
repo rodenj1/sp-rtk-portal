@@ -16,6 +16,14 @@ All of it is process-local state (the Portal is a single instance, ADR
   agent config's ``tunnel_silence_timeout``. It never pings it either. A
   tunnel opened on a Wake (a polling base) closes with the base's last
   Remote session.
+- **Control messages.** A held tunnel carries what polls and Check-ins
+  carry for a polling base (ticket #205): the agent's Check-ins come in on
+  it (``on_check_in``), and the broker sends the agent a
+  :class:`~sp_rtk_portal_protocol.TunnelUpdate` (agent config, metered,
+  notices, live Remote sessions) when it connects and on every change
+  (:meth:`TunnelBroker.push`), and each Remote session's end. Anything the
+  tunnel receives is a sign of life: the base's last-seen advances (at most
+  every :data:`SEEN_EVERY`, so with each ping).
 - **Remote session.** Per user per base: :meth:`TunnelBroker.start_session`
   returns the live one, or starts one with a fresh path token (≥128 random
   bits). A Session bar's status channel :meth:`TunnelBroker.attend`\\ s it.
@@ -66,12 +74,25 @@ import contextlib
 import hmac
 import logging
 import secrets
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
 
-from sp_rtk_portal_protocol import FrameError, Stream, Tunnel, TunnelClosed
+from sp_rtk_portal_protocol import (
+    CheckIn,
+    EndedSession,
+    FrameError,
+    LiveSession,
+    Message,
+    MessageError,
+    Stream,
+    Tunnel,
+    TunnelClosed,
+    TunnelUpdate,
+    control_message,
+    read_control,
+)
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from sp_rtk_portal.agent_api import config as agent_config
@@ -80,7 +101,7 @@ from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
 from sp_rtk_portal.tunnel import store
-from sp_rtk_portal.tunnel.end_reason import EndReason
+from sp_rtk_portal.tunnel.end_reason import EndReason, for_base
 
 log = logging.getLogger(__name__)
 
@@ -96,6 +117,15 @@ Didn't wake (35 s, or 75 s metered, with the default intervals)."""
 ENDS_KEPT = timedelta(minutes=10)
 """How long a base's ended Remote sessions are kept for its polls: several
 poll intervals, even metered (the agent keeps each end once)."""
+
+
+SEEN_EVERY = timedelta(seconds=10)
+"""How often a held tunnel's traffic advances the base's last-seen: well
+within the agent's ping interval, so every ping does, without a database
+write for every frame of a busy tunnel."""
+
+OnCheckIn = Callable[[CheckIn], Awaitable[None]]
+"""Records a Check-in that came in on a held tunnel."""
 
 
 class TunnelDown(Exception):
@@ -167,6 +197,8 @@ class _Attached:
     """A held tunnel that sent nothing for this long is closed."""
     heard_at: datetime | None = None
     """When it last sent anything (opening counts)."""
+    seen_at: datetime | None = None
+    """When its traffic last advanced the base's last-seen."""
     closing: bool = False
 
     def silent(self, now: datetime) -> bool:
@@ -271,15 +303,29 @@ class TunnelBroker:
             raise TunnelDown(base_id) from exc
 
     async def serve_tunnel(
-        self, base_id: str, websocket: WebSocket, *, held: bool = False
+        self,
+        base_id: str,
+        websocket: WebSocket,
+        *,
+        held: bool = False,
+        on_check_in: OnCheckIn | None = None,
     ) -> None:
         """Accept a tunnel websocket the route admitted, and run it until
         either side closes it. ``held``: the base holds it open (no Wake
         opened it). The base's record says so before the agent sees it
-        open."""
-        tunnel = Tunnel(websocket.send_bytes, role="portal")
+        open. A held tunnel's Check-ins go to ``on_check_in``."""
+
+        async def on_control(payload: bytes) -> None:
+            try:
+                message = read_control(payload)
+            except MessageError as exc:
+                raise FrameError(str(exc)) from None
+            if held and isinstance(message, CheckIn) and on_check_in is not None:
+                await on_check_in(message)
+
+        tunnel = Tunnel(websocket.send_bytes, role="portal", on_control=on_control)
         now = self._clock.now()
-        attached = _Attached(tunnel, websocket, now, held=held)
+        attached = _Attached(tunnel, websocket, now, held=held, seen_at=now)
         if held:
             async with self._db.connection() as conn:
                 config = await agent_config.current(conn, self._settings)
@@ -297,11 +343,15 @@ class TunnelBroker:
             if not held and not self._live(base_id):
                 # Woken, but every Remote session ended meanwhile.
                 await self._close_tunnel(attached)
+            if held:
+                for session in self.recent_ends(base_id):
+                    await self._tell(attached, as_ended(session))
+                await self.push(base_id)
             while not attached.closing:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
                     break
-                attached.heard_at = self._clock.now()
+                await self._heard(base_id, attached)
                 data = message.get("bytes")
                 if data is None:
                     raise FrameError("a text message (frames are binary)")
@@ -329,6 +379,57 @@ class TunnelBroker:
                         await self._attempt_wake(base_id, "reconnecting")
             log.info("tunnel closed for base %s", base_id)
             await self._changed(base_id)
+
+    async def _heard(self, base_id: str, attached: _Attached) -> None:
+        """The tunnel sent something: a held one's base is seen now."""
+        now = attached.heard_at = self._clock.now()
+        if attached.held and now - (attached.seen_at or now) >= SEEN_EVERY:
+            attached.seen_at = now
+            try:
+                async with self._db.connection() as conn:
+                    await presence.heard(conn, base_id, now)
+            except Exception:
+                log.exception("couldn't record base %s as seen", base_id)
+
+    async def push(self, base_id: str | None = None) -> None:
+        """Something in a :class:`TunnelUpdate` changed (the agent config or
+        notices for every base, else ``base_id``'s metered flag or Remote
+        sessions): send it on the held tunnels concerned."""
+        for held_by, attached in list(self._tunnels.items()):
+            if attached.held and base_id in (None, held_by):
+                try:
+                    await self._tell(attached, await self._update(held_by))
+                except Exception:
+                    # The change stands; the base hears it on reconnecting.
+                    log.exception("couldn't send base %s its update", held_by)
+
+    async def _update(self, base_id: str) -> TunnelUpdate:
+        async with self._db.connection() as conn:
+            config = await agent_config.current(conn, self._settings)
+            notices = await agent_config.wire_notices(conn)
+            cur = await conn.execute(
+                "SELECT metered, remote_paused FROM base WHERE id = %s", (base_id,)
+            )
+            row = await cur.fetchone()
+        paused = bool(row and row["remote_paused"])
+        return TunnelUpdate(
+            config=config,
+            metered=bool(row and row["metered"]),
+            notices=notices,
+            sessions=[]
+            if paused
+            else [as_live(s) for s in self.live_sessions(base_id)],
+        )
+
+    async def _tell(self, attached: _Attached, message: Message) -> None:
+        """Send the agent a control message on its held tunnel (best effort:
+        a tunnel that's going away doesn't need it)."""
+        if attached.closing:
+            return
+        try:
+            await attached.tunnel.send_control(control_message(message))
+        except (TunnelClosed, WebSocketDisconnect, RuntimeError, OSError) as exc:
+            log.info("couldn't tell a base on its tunnel: %s", exc)
 
     async def _close_tunnel(self, attached: _Attached) -> None:
         if attached.closing:
@@ -402,6 +503,7 @@ class TunnelBroker:
             )
             self._sessions[session.id] = session
             log.info("Remote session %s started on base %s", session.id, base_id)
+            await self.push(base_id)
         self.renew(session)
         if not self.tunnel_up(base_id):
             attempt = self._attempts.get(base_id)
@@ -595,10 +697,13 @@ class TunnelBroker:
                 ip=ip or session.ip,
             )
         log.info("Remote session %s ended: %s", session.id, reason)
+        attached = self._tunnels.get(session.base_id)
+        if attached is not None and attached.held:
+            await self._tell(attached, as_ended(session))
+            await self.push(session.base_id)
         if not self._live(session.base_id):
             self._wakes.pop(session.base_id, None)
             self._attempts.pop(session.base_id, None)
-            attached = self._tunnels.get(session.base_id)
             if attached is not None and not attached.held:
                 await self._close_tunnel(attached)
         await self._changed(session.base_id)
@@ -664,3 +769,27 @@ class TunnelBroker:
                 await self.sweep()
             except Exception:
                 log.exception("Remote session sweep failed")
+
+
+def as_live(session: RemoteSession) -> LiveSession:
+    """A live Remote session as the base hears of it."""
+    return LiveSession(
+        who=session.who,
+        since=session.started_at.isoformat(),
+        shared=session.shared,
+        id=str(session.id),
+    )
+
+
+def as_ended(session: RemoteSession) -> EndedSession:
+    """An ended Remote session as the base hears of it, with its reason in
+    the base's words."""
+    assert session.ended_at is not None and session.end_reason is not None
+    return EndedSession(
+        id=str(session.id),
+        who=session.who,
+        since=session.started_at.isoformat(),
+        at=session.ended_at.isoformat(),
+        reason=for_base(session.end_reason),
+        shared=session.shared,
+    )

@@ -49,6 +49,14 @@ class AgentTime:
         finally:
             self._busy -= 1
 
+    def begin(self) -> None:
+        """Like :meth:`working`, for work that ends elsewhere (a ping, until
+        its pong): call :meth:`end` once it's done."""
+        self._busy += 1
+
+    def end(self) -> None:
+        self._busy -= 1
+
     async def sleep(self, seconds: float) -> None:
         sleeper = _Sleeper(
             self.clock.now() + timedelta(seconds=seconds),

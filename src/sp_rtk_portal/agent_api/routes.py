@@ -19,9 +19,8 @@ from sp_rtk_portal_protocol import (
     ClaimStart,
     ClaimStarted,
     ClaimToken,
-    EndedSession,
     ErrorReply,
-    LiveSession,
+    Notice,
     Poll,
     PollReply,
     Release,
@@ -40,7 +39,8 @@ from sp_rtk_portal.agent_api.auth import (
 from sp_rtk_portal.bases import claims, copies, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.db import Connection
-from sp_rtk_portal.tunnel.end_reason import EndReason, for_base
+from sp_rtk_portal.tunnel.broker import as_ended, as_live
+from sp_rtk_portal.tunnel.end_reason import EndReason
 from sp_rtk_portal.web.client_ip import rate_key
 
 router = APIRouter()
@@ -178,7 +178,10 @@ async def poll(
         if paused:
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
-    sessions = [] if paused else _live_sessions(ctx, seen.base_id)
+    tunnels = ctx.tunnels
+    sessions = (
+        [] if paused else [as_live(s) for s in tunnels.live_sessions(seen.base_id)]
+    )
     return reply(
         PollReply(
             config=config,
@@ -186,7 +189,7 @@ async def poll(
             notices=notices,
             wake=ctx.tunnels.wake_for_poll(seen.base_id),
             sessions=sessions,
-            ended=_recent_ends(ctx, seen.base_id),
+            ended=[as_ended(s) for s in tunnels.recent_ends(seen.base_id)],
         )
     )
 
@@ -214,31 +217,6 @@ async def _cut_paused(ctx: PortalContext, base_id: str) -> None:
     await ctx.tunnels.end_for_base(base_id, EndReason.PAUSED)
 
 
-def _live_sessions(ctx: PortalContext, base_id: str) -> list[LiveSession]:
-    return [
-        LiveSession(
-            who=s.who, since=s.started_at.isoformat(), shared=s.shared, id=str(s.id)
-        )
-        for s in ctx.tunnels.live_sessions(base_id)
-    ]
-
-
-def _recent_ends(ctx: PortalContext, base_id: str) -> list[EndedSession]:
-    """The base's recent Remote session ends, for its own record."""
-    return [
-        EndedSession(
-            id=str(s.id),
-            who=s.who,
-            since=s.started_at.isoformat(),
-            at=s.ended_at.isoformat(),
-            reason=for_base(s.end_reason),
-            shared=s.shared,
-        )
-        for s in ctx.tunnels.recent_ends(base_id)
-        if s.ended_at is not None and s.end_reason is not None
-    ]
-
-
 @router.post(CHECK_IN_PATH)
 async def check_in(
     req: AgentRequest = Depends(agent_request),
@@ -246,31 +224,52 @@ async def check_in(
 ) -> JSONResponse:
     """The slow status report: versions, LAN addresses and (from protocol
     package 0.9) remote access paused, handled as on a poll."""
-    msg = req.message(CheckIn)
+    seen, config, notices = await take_check_in(
+        ctx,
+        thumbprint=req.proof.thumbprint,
+        protocol_version=req.protocol_version,
+        ip=req.ip,
+        msg=req.message(CheckIn),
+    )
+    return reply(CheckInReply(config=config, metered=seen.metered, notices=notices))
+
+
+async def take_check_in(
+    ctx: PortalContext,
+    *,
+    thumbprint: str,
+    protocol_version: int,
+    ip: str | None,
+    msg: CheckIn,
+) -> tuple[presence.Seen, AgentConfig, list[Notice]]:
+    """Record a Check-in, over HTTPS or on a held tunnel: the base is seen
+    (from ``ip``), the copy watch sees it, and a change of remote access
+    paused is audited (and cuts the base's Remote sessions). Raises
+    :class:`AgentRefused` (401 ``unclaimed``, 429)."""
     async with ctx.db.connection() as conn:
         config = await agent_config.current(conn, ctx.settings)
-        base = await presence.pace(conn, req.proof.thumbprint)
+        base = await presence.pace(conn, thumbprint)
     if base is None:
         raise _unclaimed()
-    await copies.watch(ctx, base.base_id, req.ip)
+    await copies.watch(ctx, base.base_id, ip)
     _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
     now = ctx.clock.now()
     async with ctx.db.connection() as conn:
         seen = await presence.checked_in(
             conn,
-            thumbprint=req.proof.thumbprint,
+            thumbprint=thumbprint,
             now=now,
-            protocol_version=req.protocol_version,
-            ip=req.ip,
+            protocol_version=protocol_version,
+            ip=ip,
             check_in=msg,
         )
         if seen is None:
             raise _unclaimed()
-        await _audit_pause(conn, seen, now, req.ip)
+        await _audit_pause(conn, seen, now, ip)
         if msg.paused:
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
-    return reply(CheckInReply(config=config, metered=seen.metered, notices=notices))
+    return seen, config, notices
 
 
 @router.post(RELEASE_PATH)

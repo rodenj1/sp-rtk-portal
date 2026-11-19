@@ -112,33 +112,57 @@ class Framed:
     at: datetime
     sent: bool
     kind: Kind
+    payload: bytes = b""
 
 
 class _RecordedWebSocket:
-    """The agent's tunnel websocket, noting each frame in ``agent.frames``."""
+    """The agent's tunnel websocket, noting each frame in ``agent.frames``.
+
+    A ``PING`` counts as the agent's work in flight until its ``PONG`` comes
+    back (:meth:`AgentTime.begin`): the Portal has handled it (its last-seen
+    write included) before virtual time moves on, as it would in real time
+    50 s later.
+    """
 
     def __init__(self, ws: Any, agent: RunningAgent) -> None:
         self.ws = ws
         self._agent = agent
+        self._unanswered = 0
+
+    def _answered(self, pings: int) -> None:
+        pings = min(pings, self._unanswered)
+        self._unanswered -= pings
+        for _ in range(pings):
+            self._agent.time.end()
 
     def _note(self, message: bytes | str, sent: bool) -> None:
         if isinstance(message, bytes) and message:
             with contextlib.suppress(ValueError):
                 kind = Kind(message[0])
                 self._agent.frames.append(
-                    Framed(self._agent.portal.clock.now(), sent, kind)
+                    Framed(self._agent.portal.clock.now(), sent, kind, message[5:])
                 )
 
     async def send(self, message: bytes) -> None:
         self._note(message, sent=True)
+        if message[:1] == bytes([Kind.PING]):
+            self._unanswered += 1
+            self._agent.time.begin()
         await self.ws.send(message)
 
     async def recv(self) -> bytes | str:
-        message = await self.ws.recv()
+        try:
+            message = await self.ws.recv()
+        except BaseException:
+            self._answered(self._unanswered)  # no PONG is coming now
+            raise
         self._note(message, sent=False)
+        if isinstance(message, bytes) and message[:1] == bytes([Kind.PONG]):
+            self._answered(1)
         return message
 
     async def close(self) -> None:
+        self._answered(self._unanswered)
         await self.ws.close()
 
 
