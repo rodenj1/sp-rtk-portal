@@ -8,6 +8,7 @@ from sp_rtk_portal_protocol import (
     AgentConfig,
     CheckIn,
     CheckInReply,
+    EndedSession,
     LanAddress,
     LiveSession,
     MessageError,
@@ -147,6 +148,32 @@ def test_a_poll_reply_carries_the_live_remote_sessions():
 
 def test_an_older_portals_poll_reply_has_no_sessions():
     assert PollReply.from_json({"config": {"revision": 1}}).sessions == []
+
+
+def test_a_poll_reply_carries_session_ids_and_recent_ends_with_their_reasons():
+    reply = PollReply(
+        config=AgentConfig(revision=1),
+        sessions=[
+            LiveSession(who="op@example.com", since="2026-01-01T12:00:00+00:00", id="7")
+        ],
+        ended=[
+            EndedSession(
+                id="6",
+                who="sam@example.com",
+                since="2026-01-01T11:00:00+00:00",
+                at="2026-01-01T11:30:00+00:00",
+                reason="revoked",
+                shared=True,
+            )
+        ],
+    )
+
+    assert PollReply.from_json(reply.to_json()) == reply
+    # An older Portal sends neither: no ids, no ends.
+    older = PollReply.from_json(
+        {"config": {"revision": 1}, "sessions": [{"who": "a@b", "since": "x"}]}
+    )
+    assert older.sessions[0].id == "" and older.ended == []
 
 
 def test_a_check_in_says_whether_remote_access_is_paused():
