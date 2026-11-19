@@ -5,8 +5,8 @@ Session bar's sandboxed frame (seam 2, ADR 0004).
 public origin; a throwaway certificate the browser is told to accept, since
 WebKit keeps the ``__Host-`` cookie only over HTTPS) plus a plain listener for
 the agent's tunnel, runs the real agent pointed at a ``RealBase``, signs in, Claims the
-base through the real pages, presses "Open remotely", lets the Wake's poll
-happen and waits for Connected. Every request that reaches the Portal is
+base through the real pages, presses "Open remotely", waits for Connected (at
+once: the base holds its tunnel) and lets the agent's next poll happen. Every request that reaches the Portal is
 recorded (``Remote.requests``), so tests can see what a framed page sent and
 what came back.
 """
@@ -210,9 +210,10 @@ async def remote_frame(
                     await _claim(page, agent, origin)
                     await page.get_by_role("button", name="Open remotely").click()
                     status = page.locator("[data-field=status]")
-                    await expect(status).to_have_text(f"Waking {NAME}…")
-                    await agent.run(seconds=20)  # one poll interval: the Wake's
+                    # At once: the base holds its tunnel (no Wake).
                     await expect(status).to_have_text("Connected")
+                    # Its next poll tells the agent who is connected.
+                    await agent.run(seconds=20)
                     base_id = (await agent.status()).base_id
                     assert base_id is not None
                     yield Remote(page, portal, agent, origin, base_id, recorder, base)

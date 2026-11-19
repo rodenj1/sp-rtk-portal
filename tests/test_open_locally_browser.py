@@ -300,7 +300,7 @@ async def test_open_remotely_instead_starts_a_remote_session(
 
             await page.wait_for_url(f"{setup.origin}/bases/{base_id}")
             await expect(page.locator("[data-field=status]")).to_have_text(
-                "Waking North field…"
+                "Connected"  # the base holds its tunnel
             )
 
 

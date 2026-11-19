@@ -54,6 +54,7 @@ from sp_rtk_portal_protocol.tunnel import (
     TunnelClosed,
 )
 from sp_rtk_portal_protocol.version import (
+    HOLDING_VERSION,
     PROTOCOL_VERSION,
     VERSION_HEADER,
     version_from_header,
@@ -71,6 +72,7 @@ __all__ = [
     "END_PAUSED",
     "END_REASONS",
     "END_REVOKED",
+    "HOLDING_VERSION",
     "MAX_CLOCK_SKEW",
     "POLL_PATH",
     "PROTOCOL_VERSION",

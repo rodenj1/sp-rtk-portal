@@ -1,8 +1,10 @@
 """The tunnel: many byte streams multiplexed over one websocket.
 
-A Woken agent opens ``wss://<Portal host>/agent/tunnel`` (a GET signed with
-its base key, echoing the Wake nonce in the proof's ``nonce`` claim). Inside,
-every binary websocket message is one frame (SniTun-style):
+An agent opens ``wss://<Portal host>/agent/tunnel`` with a GET signed with
+its base key: a Claimed base holding its tunnel (protocol version 2) signs
+it with no nonce and keeps it open; a Woken one echoes the Wake nonce in the
+proof's ``nonce`` claim. Inside, every binary websocket message is one frame
+(SniTun-style):
 
 ====  ========  =========  ==============================================
 byte  1         4          rest
@@ -19,7 +21,9 @@ Types (:class:`Kind`):
 - ``DATA`` (2): 1..:data:`MAX_DATA` bytes for stream ``id``.
 - ``CLOSE`` (3): stream ``id`` is finished, both ways. No payload.
 - ``PING`` (4) / ``PONG`` (5): stream 0, up to :data:`MAX_PING` bytes; a
-  ``PING`` is answered with a ``PONG`` carrying the same payload.
+  ``PING`` is answered with a ``PONG`` carrying the same payload. Only the
+  agent pings (every ``AgentConfig.ping_interval``); the Portal closes a
+  held tunnel that sent nothing for ``AgentConfig.tunnel_silence_timeout``.
 - ``PAUSE`` (6) / ``RESUME`` (7): flow control for stream ``id``: stop
   (resume) sending ``DATA`` on it. No payload.
 

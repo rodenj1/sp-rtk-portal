@@ -96,6 +96,8 @@ async def serving(
             ssl_certfile=tls.cert if tls else None,
             ssl_keyfile=tls.key if tls else None,
             timeout_keep_alive=timeout_keep_alive,
+            ws_ping_interval=None,  # as in production (main.py)
+            ws_ping_timeout=None,
         )
     )
     server.install_signal_handlers = lambda: None  # type: ignore[method-assign]

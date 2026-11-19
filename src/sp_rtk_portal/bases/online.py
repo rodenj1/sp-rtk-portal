@@ -1,5 +1,10 @@
-"""Online state (ADR 0002): a base is online from its latest sign of life
-(a poll or a Check-in) until about 3 beats are missed.
+"""Online state (ADRs 0002, 0006).
+
+A base holding its tunnel is online while the tunnel is connected, and for
+:data:`HELD_GRACE` after its last sign of life once it drops
+(``reconnecting``), so a Portal restart or a short glitch doesn't flash it
+offline. A polling base is online from its latest sign of life (a poll or a
+Check-in) until about 3 beats are missed.
 An online base whose agent reports remote access paused is "paused": it
 keeps in touch, but ignores Wakes.
 
@@ -20,6 +25,9 @@ from sp_rtk_portal.bases.store import BaseSummary
 
 MISSED_BEATS = 3
 
+HELD_GRACE = timedelta(minutes=2)
+"""How long a base whose held tunnel dropped stays online."""
+
 State = Literal["online", "offline", "needs-upgrade", "never-seen", "paused"]
 
 LABELS: dict[State, str] = {
@@ -36,6 +44,8 @@ def interval(config: AgentConfig, metered: bool) -> int:
 
 
 def offline_after(base: BaseSummary, config: AgentConfig) -> timedelta:
+    if base.connection_mode == "reconnecting":
+        return HELD_GRACE
     beat = max(interval(config, base.metered), interval(config, base.polled_metered))
     return timedelta(seconds=MISSED_BEATS * beat)
 
@@ -45,7 +55,9 @@ def state(base: BaseSummary, config: AgentConfig, now: datetime) -> State:
         return "needs-upgrade"  # not offline: it asks once a day
     if base.last_seen_at is None:
         return "never-seen"
-    if now - base.last_seen_at > offline_after(base, config):
+    if base.connection_mode != "holding" and (
+        now - base.last_seen_at > offline_after(base, config)
+    ):
         return "offline"
     if base.remote_paused:
         return "paused"  # online, but it won't wake until resumed on site
@@ -56,3 +68,12 @@ def wake_mode(base: BaseSummary, config: AgentConfig) -> str:
     """How a Wake reaches the base, in words."""
     mode = f"Polling every {interval(config, base.metered)} s"
     return mode + " (metered)" if base.metered else mode
+
+
+def connection(base: BaseSummary, config: AgentConfig) -> str:
+    """How the Portal reaches the base, in words."""
+    if base.connection_mode == "holding":
+        return "Holding its tunnel"
+    if base.connection_mode == "reconnecting":
+        return "Reconnecting its tunnel"
+    return wake_mode(base, config)

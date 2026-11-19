@@ -205,9 +205,15 @@ class AgentConfig(Message):
     """``wss://`` on the Portal's own host; empty means the agent's built-in
     ``wss://<Portal host>/agent/tunnel``. The agent ignores any other."""
     tunnel_idle_timeout: int = 120
-    """Close the tunnel this long after the last browser leaves."""
+    """End a Remote session this long after its last Session bar closed."""
     tunnel_hard_cap: int = 3600
     """A Remote session's hard cap."""
+    ping_interval: int = 50
+    """How often an agent holding its tunnel pings the Portal (the Portal
+    never pings)."""
+    tunnel_silence_timeout: int = 120
+    """The Portal closes a held tunnel that sent nothing for this long
+    (informational for the agent: it pings well within it)."""
     lease_length: int = 300
     """How long a Remote session's path token lives after its Session bar
     last renewed it (Session bar only: the agent ignores it)."""

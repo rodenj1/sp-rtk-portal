@@ -39,7 +39,10 @@ class StatusChannel:
                 self.messages.append(message)
                 self._changed.set()
                 if message.get("renew") and self.renewing:
-                    await self._send_renew()
+                    # The Portal may have ended and closed the channel
+                    # meanwhile: still read what it sent before closing.
+                    with contextlib.suppress(ConnectionClosed):
+                        await self._send_renew()
         self._changed.set()
 
     @property

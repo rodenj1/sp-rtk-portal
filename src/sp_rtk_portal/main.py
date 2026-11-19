@@ -37,6 +37,10 @@ def main() -> None:
         port=int(os.environ.get("PORTAL_PORT", "8000")),
         log_config=None,  # use the stdout handler set up above
         proxy_headers=False,  # the client IP comes from CF-Connecting-IP
+        # The Portal never pings a websocket: an agent holding its tunnel
+        # pings the Portal (ADR 0006), and the Portal closes a silent one.
+        ws_ping_interval=None,
+        ws_ping_timeout=None,
     )
 
 

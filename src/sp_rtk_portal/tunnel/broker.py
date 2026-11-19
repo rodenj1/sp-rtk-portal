@@ -9,15 +9,20 @@ All of it is process-local state (the Portal is a single instance, ADR
   (:meth:`TunnelBroker.redeem`).
 - **Tunnel.** One per base, shared by all its Remote sessions
   (:meth:`TunnelBroker.serve_tunnel` runs it; :meth:`TunnelBroker.open_stream`
-  opens a stream to the base's UI).
+  opens a stream to the base's UI); a new one from the same base replaces
+  the old. A Claimed base on protocol version 2 *holds* its tunnel open
+  (ADR 0006): the Portal never closes a held tunnel for want of Remote
+  sessions, only when it sent nothing (not even its agent's ping) for the
+  agent config's ``tunnel_silence_timeout``. It never pings it either. A
+  tunnel opened on a Wake (a polling base) closes with the base's last
+  Remote session.
 - **Remote session.** Per user per base: :meth:`TunnelBroker.start_session`
   returns the live one, or starts one with a fresh path token (≥128 random
   bits). A Session bar's status channel :meth:`TunnelBroker.attend`\\ s it.
   It ends when nobody attended it for the idle timeout, at the hard cap, or
   when the Portal ends it: :meth:`TunnelBroker.end_for_account` (un-Share,
   leaving, logging out, account deletion) or :meth:`TunnelBroker.end_for_base`
-  (Un-claim, pause). Ending always revokes the token at once; the tunnel
-  closes with the base's last Remote session.
+  (Un-claim, pause). Ending always revokes the token at once.
 - **Lease.** A path token works only until its lease expires (ADR 0005):
   starting or rejoining the session, opening a status channel and
   :meth:`TunnelBroker.renew` each give it a fresh lease. The broker asks the
@@ -44,10 +49,11 @@ Idle timeout, hard cap and lease come from the agent config current when the
 session started.
 
 What a Session bar shows (:meth:`TunnelBroker.state`) follows the base's
-current Wake attempt: **waking** after Open remotely, **reconnecting** after
-the tunnel dropped under live sessions (the broker Wakes the base once more
-on its own), and **didnt_wake** once an attempt has gone unanswered for the
-poll interval + :data:`WAKE_GRACE`. Retry (Open remotely again) starts a new
+current attempt to reach it: **waking** after Open remotely, **reconnecting**
+after the tunnel dropped under live sessions (the broker Wakes a polling
+base once more on its own; a holding base comes back by itself), and
+**didnt_wake** once an attempt has gone unanswered for the poll interval +
+:data:`WAKE_GRACE`. A holding base is never Woken. Retry (Open remotely again) starts a new
 attempt. **Still there?** (:meth:`TunnelBroker.still_there`) comes
 :attr:`Settings.still_there_warning` before the hard cap;
 :meth:`TunnelBroker.keep_going` restarts the hard cap.
@@ -69,7 +75,7 @@ from sp_rtk_portal_protocol import FrameError, Stream, Tunnel, TunnelClosed
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from sp_rtk_portal.agent_api import config as agent_config
-from sp_rtk_portal.bases import online
+from sp_rtk_portal.bases import online, presence
 from sp_rtk_portal.clock import Clock
 from sp_rtk_portal.config import Settings
 from sp_rtk_portal.db import Database
@@ -155,7 +161,17 @@ class _Attached:
     tunnel: Tunnel
     websocket: WebSocket
     opened_at: datetime
+    held: bool = False
+    """Opened to hold (protocol version 2, no Wake), not on a Wake."""
+    silence: timedelta = timedelta(0)
+    """A held tunnel that sent nothing for this long is closed."""
+    heard_at: datetime | None = None
+    """When it last sent anything (opening counts)."""
     closing: bool = False
+
+    def silent(self, now: datetime) -> bool:
+        heard = self.heard_at or self.opened_at
+        return self.held and now - heard >= self.silence
 
 
 @dataclass
@@ -185,8 +201,11 @@ class TunnelBroker:
     async def start(self) -> None:
         async with self._db.connection() as conn:
             ended = await store.end_leftovers(conn, self._clock.now())
+            gone = await presence.tunnels_gone(conn)
         if ended:
             log.info("ended %s Remote sessions left by a previous run", ended)
+        if gone:
+            log.info("%s bases held a tunnel to a previous run", gone)
         self._sweeper = asyncio.create_task(self._sweep_forever())
 
     async def stop(self) -> None:
@@ -251,25 +270,38 @@ class TunnelBroker:
         except TunnelClosed as exc:
             raise TunnelDown(base_id) from exc
 
-    async def serve_tunnel(self, base_id: str, websocket: WebSocket) -> None:
-        """Run an accepted tunnel websocket until either side closes it."""
+    async def serve_tunnel(
+        self, base_id: str, websocket: WebSocket, *, held: bool = False
+    ) -> None:
+        """Accept a tunnel websocket the route admitted, and run it until
+        either side closes it. ``held``: the base holds it open (no Wake
+        opened it). The base's record says so before the agent sees it
+        open."""
         tunnel = Tunnel(websocket.send_bytes, role="portal")
-        attached = _Attached(tunnel, websocket, self._clock.now())
+        now = self._clock.now()
+        attached = _Attached(tunnel, websocket, now, held=held)
+        if held:
+            async with self._db.connection() as conn:
+                config = await agent_config.current(conn, self._settings)
+                await presence.tunnel_held(conn, base_id, now)
+            attached.silence = timedelta(seconds=config.tunnel_silence_timeout)
+        await websocket.accept()
         previous = self._tunnels.get(base_id)
-        if previous is not None:
-            await self._close_tunnel(previous)
         self._tunnels[base_id] = attached
         self._attempts.pop(base_id, None)
-        log.info("tunnel open for base %s", base_id)
+        if previous is not None:
+            await self._close_tunnel(previous)
+        log.info("tunnel %s for base %s", "held" if held else "open", base_id)
         await self._changed(base_id)
         try:
-            if not self._live(base_id):
+            if not held and not self._live(base_id):
                 # Woken, but every Remote session ended meanwhile.
                 await self._close_tunnel(attached)
             while not attached.closing:
                 message = await websocket.receive()
                 if message["type"] == "websocket.disconnect":
                     break
+                attached.heard_at = self._clock.now()
                 data = message.get("bytes")
                 if data is None:
                     raise FrameError("a text message (frames are binary)")
@@ -284,8 +316,15 @@ class TunnelBroker:
                 await websocket.close()
             if self._tunnels.get(base_id) is attached:
                 del self._tunnels[base_id]
+                if held:
+                    with contextlib.suppress(Exception):
+                        async with self._db.connection() as conn:
+                            await presence.tunnel_dropped(
+                                conn, base_id, attached.heard_at or attached.opened_at
+                            )
                 if self._live(base_id) and not self._stopping:
-                    # Dropped under live sessions: Wake the base once more.
+                    # Dropped under live sessions: Wake a polling base once
+                    # more; a holding one comes back by itself.
                     with contextlib.suppress(Exception):
                         await self._attempt_wake(base_id, "reconnecting")
             log.info("tunnel closed for base %s", base_id)
@@ -374,14 +413,18 @@ class TunnelBroker:
     async def _attempt_wake(
         self, base_id: str, kind: Literal["waking", "reconnecting"]
     ) -> None:
+        """Start an attempt to reach the base: a Wake, unless it holds its
+        tunnel (it comes back by itself)."""
         async with self._db.connection() as conn:
             config = await agent_config.current(conn, self._settings)
             cur = await conn.execute(
-                "SELECT metered FROM base WHERE id = %s", (base_id,)
+                "SELECT metered, connection_mode FROM base WHERE id = %s",
+                (base_id,),
             )
             row = await cur.fetchone()
         beat = timedelta(seconds=online.interval(config, bool(row and row["metered"])))
-        self.wake(base_id)
+        if row is None or row["connection_mode"] == "polling":
+            self.wake(base_id)
         self._attempts[base_id] = _Attempt(kind, self._clock.now() + beat + WAKE_GRACE)
 
     def lookup(self, base_id: str, token: str) -> RemoteSession | None:
@@ -504,8 +547,8 @@ class TunnelBroker:
         ip: str | None = None,
     ) -> None:
         """The user is out: end their live Remote sessions (on ``base_id``
-        only, if given), revoking their tokens. A base's tunnel closes when
-        its last Remote session goes."""
+        only, if given), revoking their tokens. A Woken tunnel closes when
+        its base's last Remote session goes."""
         for session in list(self._sessions.values()):
             if session.account_id == account_id and (
                 base_id is None or session.base_id == base_id
@@ -532,8 +575,8 @@ class TunnelBroker:
     async def _end(
         self, session: RemoteSession, reason: EndReason, *, ip: str | None = None
     ) -> None:
-        """End ``session`` and revoke its token; closes the base's tunnel if
-        it was the last."""
+        """End ``session`` and revoke its token; closes the base's Woken
+        tunnel if it was the last (a held one stays open)."""
         if session.ended or self._sessions.get(session.id) is not session:
             return
         session.ended, session.end_reason = True, reason
@@ -555,16 +598,23 @@ class TunnelBroker:
         if not self._live(session.base_id):
             self._wakes.pop(session.base_id, None)
             self._attempts.pop(session.base_id, None)
-            await self._drop_tunnel(session.base_id)
+            attached = self._tunnels.get(session.base_id)
+            if attached is not None and not attached.held:
+                await self._close_tunnel(attached)
         await self._changed(session.base_id)
 
     # --- timeouts ------------------------------------------------------------
 
     async def sweep(self) -> None:
-        """End Remote sessions past their idle timeout, hard cap or lease, and
-        tell Session bars when a Wake went unanswered, the hard cap is near or
-        the lease is due for renewal."""
+        """End Remote sessions past their idle timeout, hard cap or lease,
+        close held tunnels gone silent, and tell Session bars when a Wake
+        went unanswered, the hard cap is near or the lease is due for
+        renewal."""
         now = self._clock.now()
+        for base_id, attached in list(self._tunnels.items()):
+            if not attached.closing and attached.silent(now):
+                log.info("closing base %s's tunnel: silent", base_id)
+                await self._close_tunnel(attached)
         for session in list(self._sessions.values()):
             if now - session.started_at >= session.hard_cap:
                 await self._end(session, EndReason.HARD_CAP)

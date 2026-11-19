@@ -9,6 +9,7 @@ from typing import Any, Literal
 from sp_rtk_portal.db import Connection
 
 Role = Literal["operator", "shared"]
+ConnectionMode = Literal["holding", "reconnecting", "polling"]
 OPERATOR: Role = "operator"
 SHARED: Role = "shared"
 
@@ -31,6 +32,8 @@ class BaseSummary:
     possible_copy_ips: list[str] = field(default_factory=list)
     remote_paused: bool = False
     """Remote access paused on site: Open remotely is refused."""
+    connection_mode: ConnectionMode = "polling"
+    """How the Portal last reached it (see :mod:`.presence`)."""
     role: Role = "operator"
     """How the reader reaches it: their own Claim, or a Share."""
 
@@ -38,7 +41,7 @@ class BaseSummary:
 _COLUMNS = (
     "id, name, software_version, last_seen_at, protocol_version, metered,"
     " polled_metered, lan_addresses, host(public_ip) AS public_ip,"
-    " needs_upgrade, remote_paused, possible_copy_at,"
+    " needs_upgrade, remote_paused, connection_mode, possible_copy_at,"
     " coalesce(possible_copy_ips, '{}') AS possible_copy_ips"
 )
 _ROLE = (

@@ -17,8 +17,8 @@ from sp_rtk_portal_protocol import (
 )
 
 
-def test_the_protocol_version_is_an_integer_starting_at_1():
-    assert PROTOCOL_VERSION == 1
+def test_the_protocol_version_is_2_for_held_tunnels():
+    assert PROTOCOL_VERSION == 2
     assert VERSION_HEADER == "SP-RTK-Protocol-Version"
 
 
