@@ -20,7 +20,7 @@ from sp_rtk_portal_protocol import (
     ClaimStarted,
     ClaimToken,
     ErrorReply,
-    LiveSession,
+    Notice,
     Poll,
     PollReply,
     Release,
@@ -39,6 +39,7 @@ from sp_rtk_portal.agent_api.auth import (
 from sp_rtk_portal.bases import claims, copies, online, presence, unclaim
 from sp_rtk_portal.context import PortalContext, portal_context
 from sp_rtk_portal.db import Connection
+from sp_rtk_portal.tunnel.broker import as_ended
 from sp_rtk_portal.tunnel.end_reason import EndReason
 from sp_rtk_portal.web.client_ip import rate_key
 
@@ -149,7 +150,7 @@ async def poll(
     live Remote sessions (for its local Portal page).
 
     A poll saying ``paused`` (remote access paused on site) ends the base's
-    live Remote sessions and closes its tunnel. A pending Wake is still
+    live Remote sessions; a held tunnel stays open. A pending Wake is still
     sent: the agent is the one that ignores it, whatever the Portal does.
     """
     msg = req.message(Poll)
@@ -177,7 +178,8 @@ async def poll(
         if paused:
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
-        sessions = [] if paused else await _live_sessions(conn, ctx, seen)
+    tunnels = ctx.tunnels
+    sessions = tunnels.reported_sessions(seen.base_id, paused=paused)
     return reply(
         PollReply(
             config=config,
@@ -185,6 +187,7 @@ async def poll(
             notices=notices,
             wake=ctx.tunnels.wake_for_poll(seen.base_id),
             sessions=sessions,
+            ended=[as_ended(s) for s in tunnels.recent_ends(seen.base_id)],
         )
     )
 
@@ -207,30 +210,10 @@ async def _audit_pause(
 
 
 async def _cut_paused(ctx: PortalContext, base_id: str) -> None:
-    """Remote access is paused on site: its Remote sessions end and its
-    tunnel closes (before the pause is recorded, as on Un-claim)."""
-    await ctx.tunnels.end_for_base(base_id, EndReason.PAUSED)
-
-
-async def _live_sessions(
-    conn: Connection, ctx: PortalContext, seen: presence.Seen
-) -> list[LiveSession]:
-    live = ctx.tunnels.live_sessions(seen.base_id)
-    if not live:
-        return []
-    cur = await conn.execute(
-        "SELECT id, email FROM account WHERE id = ANY(%s)",
-        ([s.account_id for s in live],),
-    )
-    emails = {row["id"]: row["email"] for row in await cur.fetchall()}
-    return [
-        LiveSession(
-            who=emails.get(s.account_id, "?"),
-            since=s.started_at.isoformat(),
-            shared=s.account_id != seen.owner_account_id,
-        )
-        for s in live
-    ]
+    """Remote access is paused on site: its Remote sessions end (before the
+    pause is recorded, as on Un-claim). A held tunnel stays open, so the
+    base stays online; its agent refuses every stream while paused."""
+    await ctx.tunnels.end_for_base(base_id, EndReason.PAUSED, keep_held=True)
 
 
 @router.post(CHECK_IN_PATH)
@@ -238,52 +221,61 @@ async def check_in(
     req: AgentRequest = Depends(agent_request),
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
-    """The slow status report: versions, Doorbell health, LAN addresses and
-    (from protocol package 0.9) remote access paused, handled as on a poll.
-    The reply says whether the Portal hears the base's Doorbell, and gives it its
-    ring key while the agent config names a Doorbell host."""
-    msg = req.message(CheckIn)
+    """The slow status report: versions, LAN addresses and (from protocol
+    package 0.9) remote access paused, handled as on a poll."""
+    seen, config, notices = await take_check_in(
+        ctx,
+        thumbprint=req.proof.thumbprint,
+        protocol_version=req.protocol_version,
+        ip=req.ip,
+        msg=req.message(CheckIn),
+    )
+    return reply(CheckInReply(config=config, metered=seen.metered, notices=notices))
+
+
+async def take_check_in(
+    ctx: PortalContext,
+    *,
+    thumbprint: str,
+    protocol_version: int,
+    ip: str | None,
+    msg: CheckIn,
+    on_tunnel: bool = False,
+) -> tuple[presence.Seen, AgentConfig, list[Notice]]:
+    """Record a Check-in, over HTTPS or on a held tunnel: the base is seen
+    (from ``ip``), the copy watch sees it, and a change of remote access
+    paused is audited (and cuts the base's Remote sessions). Raises
+    :class:`AgentRefused` (401 ``unclaimed``, 429).
+
+    A refused Check-in over HTTPS is sent again later, but the tunnel has
+    no refusal for the agent to retry on: there, only a Check-in with no
+    news (:meth:`~.presence.Pace.news_in`) is paced, so a pause is never
+    lost (ticket #207). The agent sends one only on a change or when due."""
     async with ctx.db.connection() as conn:
         config = await agent_config.current(conn, ctx.settings)
-        base = await presence.pace(conn, req.proof.thumbprint)
+        base = await presence.pace(conn, thumbprint)
     if base is None:
         raise _unclaimed()
-    await copies.watch(ctx, base.base_id, req.ip)
-    _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
+    await copies.watch(ctx, base.base_id, ip)
+    if not (on_tunnel and base.news_in(msg)):
+        _keep_pace(ctx, "check-in", base.base_id, config.check_in_interval)
     now = ctx.clock.now()
     async with ctx.db.connection() as conn:
         seen = await presence.checked_in(
             conn,
-            thumbprint=req.proof.thumbprint,
+            thumbprint=thumbprint,
             now=now,
-            protocol_version=req.protocol_version,
-            ip=req.ip,
+            protocol_version=protocol_version,
+            ip=ip,
             check_in=msg,
         )
         if seen is None:
             raise _unclaimed()
-        await _audit_pause(conn, seen, now, req.ip)
+        await _audit_pause(conn, seen, now, ip)
         if msg.paused:
             await _cut_paused(ctx, seen.base_id)
         notices = await agent_config.wire_notices(conn)
-        ring_key = (
-            await presence.ring_key(conn, seen.base_id)
-            if config.doorbell_host
-            else None
-        )
-    heard = (
-        seen.last_doorbell_at is not None
-        and now - seen.last_doorbell_at <= online.DOORBELL_OFFLINE_AFTER
-    )
-    return reply(
-        CheckInReply(
-            config=config,
-            metered=seen.metered,
-            notices=notices,
-            doorbell_heard=heard and ring_key is not None,
-            ring_key=ring_key,
-        )
-    )
+    return seen, config, notices
 
 
 @router.post(RELEASE_PATH)

@@ -5,9 +5,14 @@ from __future__ import annotations
 import pytest
 
 from sp_rtk_portal_protocol import (
+    CONNECTION_MODES,
+    MODE_HOLDING,
+    MODE_POLLING,
+    MODE_RECONNECTING,
     AgentConfig,
     CheckIn,
     CheckInReply,
+    EndedSession,
     LanAddress,
     LiveSession,
     MessageError,
@@ -25,8 +30,6 @@ def test_a_poll_reply_round_trips_with_its_config_and_notices():
             poll_interval=20,
             metered_poll_interval=60,
             check_in_interval=300,
-            doorbell_host="bell.example.com",
-            doorbell_port=4500,
             tunnel_url="wss://sp-rtk-base.big-spray.com/agent/tunnel",
             tunnel_idle_timeout=120,
             tunnel_hard_cap=3600,
@@ -41,7 +44,6 @@ def test_a_poll_reply_round_trips_with_its_config_and_notices():
 def test_a_check_in_round_trips_with_its_lan_addresses():
     check_in = CheckIn(
         software_version="0.11.0",
-        doorbell="off",
         lan_addresses=[
             LanAddress(address="192.168.1.20", interface="eth0", primary=True),
             LanAddress(address="10.0.0.5", interface="wlan0", primary=False),
@@ -57,11 +59,11 @@ def test_the_config_block_takes_built_in_defaults_for_what_it_lacks():
     assert config.poll_interval == 20
     assert config.metered_poll_interval == 60
     assert config.check_in_interval == 300
-    assert config.doorbell_host is None
-    assert config.doorbell_port is None
     assert config.tunnel_url == ""  # the agent's built-in tunnel URL
     assert config.tunnel_idle_timeout == 120
     assert config.tunnel_hard_cap == 3600
+    assert config.ping_interval == 50
+    assert config.tunnel_silence_timeout == 120
 
 
 def test_unknown_fields_are_ignored_at_every_level():
@@ -91,7 +93,7 @@ def test_a_poll_says_whether_remote_access_is_paused():
         (PollReply, {"config": {"revision": 1}, "notices": "x"}),
         (PollReply, {"config": {"revision": 1}, "notices": [1]}),
         (PollReply, {"config": {"revision": 1}, "metered": 1}),
-        (AgentConfig, {"revision": 1, "doorbell_port": "4500"}),
+        (AgentConfig, {"revision": 1, "poll_interval": "20"}),
         (AgentConfig, {"revision": True}),
         (CheckIn, {"lan_addresses": [{"interface": "eth0"}]}),
     ],
@@ -102,9 +104,16 @@ def test_a_mistyped_field_is_refused(cls, data):
 
 
 def test_an_optional_field_may_be_null():
-    config = AgentConfig.from_json({"revision": 1, "doorbell_host": None})
+    assert CheckIn.from_json({"paused": None}).paused is None
 
-    assert config.doorbell_host is None
+
+def test_a_config_block_naming_a_doorbell_host_still_parses():
+    # From a Portal before the Doorbell was dropped (ADR 0006).
+    config = AgentConfig.from_json(
+        {"revision": 4, "doorbell_host": "bell.example.com", "doorbell_port": 4500}
+    )
+
+    assert config == AgentConfig(revision=4)
 
 
 def test_upgrade_required_names_the_minimum_version():
@@ -147,9 +156,45 @@ def test_an_older_portals_poll_reply_has_no_sessions():
     assert PollReply.from_json({"config": {"revision": 1}}).sessions == []
 
 
+def test_a_poll_reply_carries_session_ids_and_recent_ends_with_their_reasons():
+    reply = PollReply(
+        config=AgentConfig(revision=1),
+        sessions=[
+            LiveSession(who="op@example.com", since="2026-01-01T12:00:00+00:00", id="7")
+        ],
+        ended=[
+            EndedSession(
+                id="6",
+                who="sam@example.com",
+                since="2026-01-01T11:00:00+00:00",
+                at="2026-01-01T11:30:00+00:00",
+                reason="revoked",
+                shared=True,
+            )
+        ],
+    )
+
+    assert PollReply.from_json(reply.to_json()) == reply
+    # An older Portal sends neither: no ids, no ends.
+    older = PollReply.from_json(
+        {"config": {"revision": 1}, "sessions": [{"who": "a@b", "since": "x"}]}
+    )
+    assert older.sessions[0].id == "" and older.ended == []
+
+
 def test_a_check_in_says_whether_remote_access_is_paused():
     paused = CheckIn(software_version="0.11.0", paused=True)
 
     assert CheckIn.from_json(paused.to_json()) == paused
     # An agent from before the field existed says nothing either way.
     assert CheckIn.from_json({"software_version": "0.11.0"}).paused is None
+
+
+def test_a_check_in_says_how_the_portal_reaches_the_base():
+    assert CONNECTION_MODES == (MODE_HOLDING, MODE_RECONNECTING, MODE_POLLING)
+    for mode in CONNECTION_MODES:
+        check_in = CheckIn(mode=mode)
+        assert CheckIn.from_json(check_in.to_json()) == check_in
+    assert CheckIn.from_json({}).mode is None  # an older agent
+    with pytest.raises(MessageError):
+        CheckIn.from_json({"mode": "teleporting"})

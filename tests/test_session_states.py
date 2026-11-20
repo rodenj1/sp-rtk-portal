@@ -5,6 +5,9 @@ Session paused, and who else is connected.
 The Portal is served over real TCP; the real agent runs on virtual time and
 the Portal's clock is fake, so every timeout is reached by letting exactly
 that much time pass.
+
+The agent here speaks protocol version 1 (a polling base, reached through
+Wakes), except for ``held_agent``, a base holding its tunnel.
 """
 
 from __future__ import annotations
@@ -54,9 +57,39 @@ async def ui() -> AsyncIterator[BaseUi]:
 async def agent(
     portal: Portal, operator: Browser, server: int, ui: BaseUi
 ) -> AsyncIterator[RunningAgent]:
-    async with running_agent(portal, server_port=server, app_port=ui.port) as a:
+    async with running_agent(
+        portal, server_port=server, app_port=ui.port, protocol_version=1
+    ) as a:
         await a.claim(operator)
         yield a
+
+
+@pytest.fixture
+async def held_agent(
+    portal: Portal, operator: Browser, server: int, ui: BaseUi
+) -> AsyncIterator[RunningAgent]:
+    """A base holding its tunnel (protocol version 2)."""
+    async with running_agent(portal, server_port=server, app_port=ui.port) as a:
+        await a.claim(operator)
+        await held_again(portal, a)
+        yield a
+
+
+async def held_again(portal: Portal, agent: RunningAgent) -> None:
+    """Let the agent's reconnects run until it holds its tunnel."""
+    base_id = await base_of(agent)
+    for _ in range(60):
+        if portal.context.tunnels.tunnel_up(base_id):
+            return
+        await agent.run(seconds=10)
+        await settle()
+    raise AssertionError("the base never held its tunnel")
+
+
+async def drop(portal: Portal, agent: RunningAgent) -> None:
+    base_id = await base_of(agent)
+    agent.drop_tunnel()
+    await eventually(lambda: not portal.context.tunnels.tunnel_up(base_id), "dropped")
 
 
 @pytest.fixture
@@ -76,6 +109,7 @@ async def settle() -> None:
 
 STATES = {
     "waking",
+    "connecting",
     "reconnecting",
     "didnt_wake",
     "connected",
@@ -124,7 +158,7 @@ async def test_a_base_that_doesnt_answer_the_wake_shows_didnt_wake_after_poll_in
         await agent.run(seconds=1)
         didnt = await bar.until("didnt_wake")
 
-    assert didnt["wake_mode"] == "Polling every 20 s"
+    assert didnt["connection"] == "Polling every 20 s"
     assert didnt["last_seen"] == "2026-01-01 12:00 UTC"
 
 
@@ -145,7 +179,7 @@ async def test_a_metered_base_gets_75_s_before_didnt_wake(
         await agent.run(seconds=1)
         didnt = await bar.until("didnt_wake")
 
-    assert didnt["wake_mode"] == "Polling every 60 s (metered)"
+    assert didnt["connection"] == "Polling every 60 s (metered)"
 
 
 # --- Offline -----------------------------------------------------------------------
@@ -221,6 +255,64 @@ async def test_when_the_reconnect_wake_goes_unanswered_the_bar_shows_didnt_wake(
         await bar.until("waking")
         await agent.run(seconds=20)
         await bar.until("connected")
+
+
+# --- A base holding its tunnel ------------------------------------------------------
+
+
+async def test_a_holding_base_is_connected_at_once(
+    portal: Portal, operator: Browser, held_agent: RunningAgent, server: int
+):
+    base_id = await base_of(held_agent)
+    await open_remotely(operator, base_id)
+    async with status_channel(server, operator, base_id) as bar:
+        first = await bar.until("connected")
+    assert bar.messages[0]["state"] == "connected"  # no Waking first
+    assert first["connection"] == "Holding its tunnel"
+
+
+async def test_a_holding_base_that_doesnt_answer_shows_didnt_wake_after_15_s(
+    portal: Portal, operator: Browser, held_agent: RunningAgent, server: int
+):
+    base_id = await base_of(held_agent)
+    held_agent.reachable = False
+    await drop(portal, held_agent)  # online for 2 more min: it may come back
+
+    await open_remotely(operator, base_id)
+    async with status_channel(server, operator, base_id) as bar:
+        assert (await bar.until("connecting"))["state"] == "connecting"
+        await held_agent.run(seconds=14)
+        await settle()
+        assert bar.state == "connecting"
+        await held_agent.run(seconds=1)
+        didnt = await bar.until("didnt_wake")
+    assert "waking" not in [m["state"] for m in bar.messages]
+    assert didnt["connection"] == "Reconnecting its tunnel"
+
+
+async def test_a_dropped_held_tunnel_shows_reconnecting_for_up_to_75_s(
+    portal: Portal, operator: Browser, held_agent: RunningAgent, server: int
+):
+    base_id = await base_of(held_agent)
+    await open_remotely(operator, base_id)
+    async with status_channel(server, operator, base_id) as bar:
+        before = await bar.until("connected")
+
+        # The agent's first retry comes within 60 s: the same session goes on.
+        await drop(portal, held_agent)
+        await bar.until("reconnecting")
+        await held_agent.run(seconds=60)
+        after = await bar.until("connected")
+        assert after["frame"] == before["frame"]
+
+        held_agent.reachable = False
+        await drop(portal, held_agent)
+        await bar.until("reconnecting")
+        await held_agent.run(seconds=74)
+        await settle()
+        assert bar.state == "reconnecting"
+        await held_agent.run(seconds=1)
+        await bar.until("didnt_wake")
 
 
 # --- Still there? and Session paused ----------------------------------------------

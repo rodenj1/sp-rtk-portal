@@ -18,11 +18,12 @@ import pytest
 from sp_rtk_base import __version__ as base_version
 from sp_rtk_portal_protocol import PROTOCOL_VERSION
 
-from .harness.agent import RunningAgent, running_agent
+from .harness.agent import POLLING_VERSION, RunningAgent, running_agent
 from .harness.fake_authentik import FakeAuthentik
 from .harness.pages import base_card, fields
 from .harness.portal import PORTAL_OWNER, Browser, Portal
 from .harness.signer import signing_agent
+from .harness.wire import wire
 
 EMAIL = "operator@example.com"
 PASSWORD = "correct horse battery staple"
@@ -46,8 +47,8 @@ async def owner(portal: Portal, authentik: FakeAuthentik) -> AsyncIterator[Brows
 
 @pytest.fixture
 async def agent(portal: Portal, operator: Browser) -> AsyncIterator[RunningAgent]:
-    """A Claimed base whose agent has Checked in and polled once."""
-    async with running_agent(portal) as a:
+    """A Claimed polling base whose agent has Checked in and polled once."""
+    async with running_agent(portal, protocol_version=POLLING_VERSION) as a:
         await a.claim(operator)
         yield a
 
@@ -118,7 +119,7 @@ async def test_metered_switches_the_poll_interval_and_the_offline_threshold(
     assert status.metered
     assert status.poll_interval == 60
     card = await _card(operator, agent)
-    assert card["wake-mode"] == ["Polling every 60 s (metered)"]
+    assert card["connection"] == ["Polling every 60 s (metered)"]
 
     await agent.run(seconds=60)
     last_poll = _seen(await _card(operator, agent))
@@ -164,9 +165,8 @@ async def test_check_in_data_and_the_public_ip_show_on_the_base(
     assert card["version"] == [f"sp-rtk-base {base_version}"]
     assert card["lan"] == ["192.168.1.20 (eth0, primary)", "10.8.0.4 (wlan0)"]
     assert card["public-ip"] == [agent.ip]
-    assert card["wake-mode"] == ["Polling every 20 s"]
-    assert card["doorbell"] == ["Doorbell: off"]
-    assert card["protocol"] == [f"Protocol {PROTOCOL_VERSION}"]
+    assert card["connection"] == ["Polling every 20 s"]
+    assert card["protocol"] == [f"Protocol {POLLING_VERSION}"]
 
 
 async def test_a_later_check_in_updates_the_lan_addresses_and_public_ip(
@@ -181,14 +181,13 @@ async def test_a_later_check_in_updates_the_lan_addresses_and_public_ip(
     assert card["public-ip"] == ["198.51.100.99"]
 
 
-async def test_the_local_page_shows_last_contact_and_wake_mode(
+async def test_the_local_page_shows_last_contact_and_the_poll_interval(
     portal: Portal, agent: RunningAgent
 ):
     await agent.run(seconds=50)
 
     status = await agent.status()
     assert status.last_contact == portal.clock.now() - timedelta(seconds=10)
-    assert status.wake_mode == "polling"
     assert status.poll_interval == 20
 
 
@@ -242,8 +241,6 @@ async def test_the_owner_edits_the_config_on_the_portal(portal: Portal, owner: B
         poll_interval="25",
         metered_poll_interval="90",
         check_in_interval="600",
-        doorbell_host="bell.example.net",
-        doorbell_port="4500",
         tunnel_url="wss://sp-rtk-base.big-spray.com/agent/tunnel",
         tunnel_idle_timeout="300",
         tunnel_hard_cap="7200",
@@ -252,17 +249,17 @@ async def test_the_owner_edits_the_config_on_the_portal(portal: Portal, owner: B
     page = fields((await owner.get("/settings")).text)
     assert page["config-revision"] == ["2"]
     assert page["config-poll_interval"] == ["25"]
-    assert page["config-doorbell_host"] == ["bell.example.net"]
+    assert page["config-tunnel_hard_cap"] == ["7200"]
 
 
 @pytest.mark.parametrize(
     "values",
     [
         {"poll_interval": "1"},
+        {"ping_interval": "5"},
+        {"ping_interval": "120", "tunnel_silence_timeout": "120"},
         {"tunnel_url": "wss://elsewhere.example.com/agent/tunnel"},
         {"tunnel_url": "ws://sp-rtk-base.big-spray.com/agent/tunnel"},
-        {"doorbell_host": "bell.example.net"},  # no port
-        {"doorbell_port": "70000", "doorbell_host": "bell.example.net"},
     ],
 )
 async def test_the_portal_refuses_a_config_the_agent_would_ignore(
@@ -304,26 +301,40 @@ async def test_a_tunnel_url_on_another_host_is_ignored_and_logged(
     assert "wss://evil.example.com/agent/tunnel" in caplog.text
 
 
-async def test_a_doorbell_host_resolving_to_a_private_address_is_ignored(
-    portal: Portal, agent: RunningAgent, owner: Browser, operator: Browser, caplog
+async def test_a_config_naming_a_doorbell_host_from_an_older_portal_still_applies(
+    portal: Portal, agent: RunningAgent, owner: Browser
 ):
-    agent.dns.records["bell.example.net"] = ["93.184.215.14"]
-    await _config(owner, doorbell_host="bell.example.net", doorbell_port="4500")
-    await agent.run(minutes=5, seconds=20)
-    card = await _card(operator, agent)
-    assert card["doorbell"] == ["Doorbell: unavailable"]
-    assert card["wake-mode"] == ["Polling every 20 s"]
+    # A block saved before the Doorbell was dropped (ADR 0006): its Doorbell
+    # host and port are ignored, the rest applies.
+    await portal.query(
+        "INSERT INTO agent_config (revision, config, created_at) VALUES (2, %s, %s)",
+        '{"revision": 2, "poll_interval": 30, "doorbell_host": "bell.example.net",'
+        ' "doorbell_port": 4500}',
+        portal.clock.now(),
+    )
+    await agent.run(seconds=20)
 
-    # Later the name is pointed into the base's LAN: caught at the next use.
-    agent.dns.records["bell.example.net"] = ["192.168.1.1"]
-    with caplog.at_level(logging.WARNING):
-        await agent.run(minutes=5)
+    status = await agent.status()
+    assert status.config_revision == 2
+    assert status.poll_interval == 30
+    page = fields((await owner.get("/settings")).text)
+    assert page["config-revision"] == ["2"]
+    assert page["config-poll_interval"] == ["30"]
+    assert not [name for name in page if "doorbell" in name]
 
-    card = await _card(operator, agent)
-    assert card["doorbell"] == ["Doorbell: ignored"]
-    assert card["wake-mode"] == ["Polling every 20 s"]
-    assert (await agent.status()).doorbell == "ignored"
-    assert "bell.example.net" in caplog.text and "192.168.1.1" in caplog.text
+    # An older agent persisted its block with the Doorbell too.
+    saved = agent.state_dir / "agent_config.json"
+    saved.write_text(
+        saved.read_text().replace(
+            '"revision": 2,', '"revision": 2, "doorbell_host": "bell.example.net",'
+        )
+    )
+    assert "doorbell_host" in saved.read_text()
+    agent.reachable = False
+    await agent.restart()
+    status = await agent.status()
+    assert status.config_revision == 2
+    assert status.poll_interval == 30
 
 
 # --- Notices and versions ---------------------------------------------------------
@@ -371,7 +382,7 @@ async def test_an_unsupported_agent_gets_426_and_the_base_needs_upgrade(
 ):
     settings = portal.context.settings
     portal.context.settings = dataclasses.replace(
-        settings, min_protocol_version=PROTOCOL_VERSION + 1
+        settings, min_protocol_version=POLLING_VERSION + 1
     )
     base_id = (await agent.status()).base_id
 
@@ -392,12 +403,17 @@ async def test_an_unsupported_agent_gets_426_and_the_base_needs_upgrade(
     await agent.run(minutes=1)
     assert _seen(await _card(operator, agent)) == portal.clock.now()
 
-    # sp-rtk-base is upgraded: same key, same Claim, polling again.
-    agent.protocol_version = PROTOCOL_VERSION + 1
+    # sp-rtk-base is upgraded: same key, same Claim, polling again (no
+    # tunnel opens here: it falls back to polling).
+    agent.protocol_version = POLLING_VERSION + 1
     await agent.restart()
+    for _ in range(60):
+        if (await agent.status()).connection_mode == "polling":
+            break
+        await agent.run(seconds=20)
     card = await _card(operator, agent)
     assert card["state"] == ["Online"]
-    assert card["protocol"] == [f"Protocol {PROTOCOL_VERSION + 1}"]
+    assert card["protocol"] == [f"Protocol {POLLING_VERSION + 1}"]
     status = await agent.status()
     assert not status.needs_upgrade
     assert status.base_id == base_id
@@ -467,32 +483,40 @@ async def test_a_poll_from_an_unknown_key_is_unclaimed(portal: Portal):
 # --- Cost ---------------------------------------------------------------------------
 
 MONTH_S = 30 * 24 * 3600
-TRANSPORT_OVERHEAD = 400
-"""Bytes per request/response pair beyond HTTP: TLS 1.3 record framing
-(2 x 22 B), TCP/IP headers for ~4 segments each way (8 x 52 B), on a
-connection kept alive between polls. A new TLS session per poll would add
-~5 kB (certificate chain), which keep-alive avoids at 20 s."""
+TCP_IP_OVERHEAD = 420
+"""Bytes per request/response pair below TLS: TCP/IP headers for ~4
+segments each way (8 x 52 B). The wire counts everything above (TLS
+records, and any handshake)."""
 CLOUDFLARE_HEADERS = 700
 """Response headers Cloudflare adds (date, server, cf-ray, alt-svc, nel,
 report-to, ...), which the in-process app doesn't."""
 
 
 async def test_polling_costs_at_most_half_a_gigabyte_a_month(
-    portal: Portal, agent: RunningAgent
+    portal: Portal, operator: Browser
 ):
-    agent.traffic.__init__()
-    await agent.run(hours=1)
+    """Measured at the wire (ticket #201): polls and Check-ins reuse one
+    connection, so there's no TLS handshake to pay each time (a new
+    connection per poll measured ~3.1 kB here with a small test certificate,
+    ~6.1 kB through Cloudflare: ~890 MB/month)."""
+    async with (
+        wire(portal) as w,
+        running_agent(
+            portal, transport=w.transport, protocol_version=POLLING_VERSION
+        ) as a,
+    ):
+        await a.claim(operator)
+        requests = len(a.requests)
+        w.sent = w.received = 0
+        await a.run(hours=1)
 
-    t = agent.traffic
-    per_hour = (
-        t.sent + t.received + t.requests * (TRANSPORT_OVERHEAD + CLOUDFLARE_HEADERS)
-    )
+    n = len(a.requests) - requests
+    per_hour = w.sent + w.received + n * (TCP_IP_OVERHEAD + CLOUDFLARE_HEADERS)
     per_month = per_hour * MONTH_S / 3600
     print(
-        f"\n{t.requests} requests/h, {t.sent / t.requests:.0f} B up and "
-        f"{t.received / t.requests:.0f} B down each (HTTP); "
-        f"~{per_month / 1e6:.0f} MB/month with {TRANSPORT_OVERHEAD} B/request "
-        f"transport overhead and {CLOUDFLARE_HEADERS} B of Cloudflare headers"
+        f"\n{n} requests/h, {w.sent / n:.0f} B up and {w.received / n:.0f} B down "
+        f"each (TLS); ~{per_month / 1e6:.0f} MB/month with {TCP_IP_OVERHEAD} B/request "
+        f"of TCP/IP and {CLOUDFLARE_HEADERS} B of Cloudflare headers"
     )
-    assert t.requests == 180 + 12  # polls every 20 s, Check-ins every 5 min
+    assert n == 180 + 12  # polls every 20 s, Check-ins every 5 min
     assert per_month <= 0.5e9

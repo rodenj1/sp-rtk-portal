@@ -59,9 +59,6 @@ class Settings:
     max_shared_users_per_base: int = 20
     max_pending_shares_per_base: int = 10
     pending_share_lifetime: timedelta = timedelta(days=14)
-    # The Doorbell server's bearer token for /doorbell/* (ticket #100). Empty
-    # (the default, v1 has no Doorbell server): that interface answers 404.
-    doorbell_token: str = ""
     # Local access (ticket #97): the port of a base's own UI on its LAN.
     # Always 8080 in production; browser tests point it at a test server.
     base_ui_port: int = 8080
@@ -73,8 +70,8 @@ class Settings:
     trusted_proxies: tuple[str, ...] = ()
     # Rate limits (ticket #98). A poll or Check-in sooner than
     # agent_min_spacing x its interval after the last is refused 429 once
-    # agent_burst early ones are used up (a restart, a resumed pause or a
-    # Doorbell change each bring one forward).
+    # agent_burst early ones are used up (a restart or a resumed pause each
+    # bring one forward).
     agent_min_spacing: float = 0.5
     agent_burst: int = 3
     claim_starts_per_ip: int = 10
@@ -83,6 +80,10 @@ class Settings:
     # Refused tunnel opens (bad proof, forged or replayed Wake) per IP; past
     # it, opens from that IP are refused unread for the rest of the hour.
     tunnel_refusals_per_ip: int = 30
+    # Admission (#206): tunnel opens admitted per second, from all bases;
+    # above it, opens get 503 with a random 10-60 s Retry-After, so that a
+    # restart doesn't bring every base back at once.
+    tunnel_opens_per_second: int = 100
     # Above max_shared_users_per_base: one base can be filled in a sitting.
     shares_per_operator: int = 30
     rate_limit_period: timedelta = timedelta(hours=1)
@@ -92,6 +93,9 @@ class Settings:
     # Audit log (#99): how often (seconds, real time) entries older than 90
     # days are deleted.
     audit_purge_interval: float = 3600.0
+    # Logs (#209): how often (seconds, real time) the count of bases holding,
+    # polling and reconnecting is logged.
+    mode_count_interval: float = 300.0
 
     @property
     def oidc_issuer(self) -> str:
@@ -130,7 +134,6 @@ class Settings:
             **opt("smtp_username"),
             **opt("smtp_password"),
             **opt("smtp_from"),
-            **opt("doorbell_token"),
             **{
                 name: int(env[f"PORTAL_{name.upper()}"])
                 for name in (
@@ -145,6 +148,7 @@ class Settings:
                     "wrong_codes_overall",
                     "shares_per_operator",
                     "tunnel_refusals_per_ip",
+                    "tunnel_opens_per_second",
                 )
                 if f"PORTAL_{name.upper()}" in env
             },

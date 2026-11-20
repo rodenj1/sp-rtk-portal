@@ -12,19 +12,19 @@ its edges are wired to the harness:
 - its clock is the Portal's fake clock, and its sleeps are virtual
   (:class:`AgentTime`): nothing happens until the test lets time pass with
   ``agent.run(seconds=...)`` or ``agent.until(state)``;
-- DNS (for a Doorbell host) is :class:`FakeDns`, and its LAN addresses are
-  ``agent.lan``;
-- its UDP (the Doorbell) is real, on 127.0.0.1: :class:`NatUdp` sends what
-  the agent addresses to a public ``(address, port)`` in ``agent.udp.routes``
-  to the local port it maps to (a stub Doorbell server), and shows replies
-  as coming from that public address. ``agent.udp.sent`` is everything the
-  agent tried to send;
+- its LAN addresses are ``agent.lan``;
 - its state directory is a temp dir, so a "restart" or a "reinstall" is a
   new ``PortalAgent`` over the same directory;
 - its tunnel (a real websocket) goes to the Portal served over TCP
   (``server_port``, see :mod:`.server`) whatever URL the agent asks for;
-  the URLs it asked for are in ``agent.tunnel_urls``. Its streams go to
-  ``app_port`` (the :mod:`.base_ui` stub) instead of ``:8080``.
+  the URLs it asked for are in ``agent.tunnel_urls``, each try and how it
+  went (opened, refused, couldn't connect) in ``agent.tunnel_attempts``,
+  and every frame it sent or received in ``agent.frames``. With
+  ``agent.upgrades_refused`` set, the network refuses websocket upgrades
+  (a proxy answering them 403) while its HTTPS still gets through. Its streams go
+  to ``app_port`` (the :mod:`.base_ui` stub) instead of ``:8080``;
+- it speaks ``protocol_version`` (by default the current one, which holds
+  its tunnel; ``1`` plays an agent that only polls and answers Wakes).
 
 sp-rtk-base is a dev dependency by path (``../sp-rtk-base``, the sibling
 submodule in the rtk_development meta repo); see the README.
@@ -33,8 +33,9 @@ submodule in the rtk_development meta repo); see the README.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -52,8 +53,19 @@ from sp_rtk_base.portal_agent.client import (
 )
 from sp_rtk_base.portal_agent.control import PortalAgent, serve
 from sp_rtk_base.portal_agent.protocol import AgentStatus
-from sp_rtk_portal_protocol import PROTOCOL_VERSION, BaseKey, LanAddress
+from sp_rtk_portal_protocol import (
+    PROTOCOL_VERSION,
+    BaseKey,
+    CheckIn,
+    LanAddress,
+    TunnelUpdate,
+    read_control,
+)
+from sp_rtk_portal_protocol.tunnel import Kind
 from websockets.asyncio.client import connect as ws_connect
+from websockets.datastructures import Headers
+from websockets.exceptions import InvalidStatus
+from websockets.http11 import Response
 
 from .agent_time import AgentTime
 from .portal import CLOUDFLARED, Browser, Portal
@@ -89,6 +101,101 @@ class CloudflareTransport(httpx.AsyncBaseTransport):
         return response
 
 
+class _Working(httpx.AsyncBaseTransport):
+    """Marks each of the agent's requests in flight (:meth:`AgentTime.working`)."""
+
+    def __init__(self, inner: httpx.AsyncBaseTransport, time: AgentTime) -> None:
+        self._inner = inner
+        self._time = time
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        async with self._time.working():
+            response = await self._inner.handle_async_request(request)
+            await response.aread()
+            return response
+
+    async def aclose(self) -> None:
+        await self._inner.aclose()
+
+
+@dataclass(frozen=True)
+class Framed:
+    """One tunnel frame, as the agent sent (``sent``) or received it."""
+
+    at: datetime
+    sent: bool
+    kind: Kind
+    payload: bytes = b""
+
+
+class _RecordedWebSocket:
+    """The agent's tunnel websocket, noting each frame in ``agent.frames``.
+
+    A ``PING`` counts as the agent's work in flight until its ``PONG`` comes
+    back (:meth:`AgentTime.begin`), and a Check-in until the Portal's answer
+    (a ``TunnelUpdate``): the Portal has handled it (its database writes
+    included) before virtual time moves on, as it would in real time.
+    """
+
+    def __init__(self, ws: Any, agent: RunningAgent) -> None:
+        self.ws = ws
+        self._agent = agent
+        self._unanswered = {Kind.PING: 0, Kind.CONTROL: 0}
+
+    def _asked(self, kind: Kind) -> None:
+        self._unanswered[kind] += 1
+        self._agent.time.begin()
+
+    def _answered(self, kind: Kind | None = None) -> None:
+        """One ``kind`` answered (a ``PONG``, a control message), or every
+        one of either (``None``: no answer is coming now)."""
+        for asked in (kind,) if kind is not None else tuple(self._unanswered):
+            answers = 1 if kind is not None else self._unanswered[asked]
+            answers = min(answers, self._unanswered[asked])
+            self._unanswered[asked] -= answers
+            for _ in range(answers):
+                self._agent.time.end()
+
+    def _note(self, message: bytes | str, sent: bool) -> None:
+        if isinstance(message, bytes) and message:
+            with contextlib.suppress(ValueError):
+                kind = Kind(message[0])
+                self._agent.frames.append(
+                    Framed(self._agent.portal.clock.now(), sent, kind, message[5:])
+                )
+
+    async def send(self, message: bytes) -> None:
+        self._note(message, sent=True)
+        if message[:1] == bytes([Kind.PING]):
+            self._asked(Kind.PING)
+        elif message[:1] == bytes([Kind.CONTROL]) and isinstance(
+            read_control(message[5:]), CheckIn
+        ):
+            self._asked(Kind.CONTROL)
+        await self.ws.send(message)
+
+    async def recv(self) -> bytes | str:
+        try:
+            message = await self.ws.recv()
+        except BaseException:
+            self._answered()  # no answer is coming now
+            raise
+        self._note(message, sent=False)
+        if isinstance(message, bytes) and message[:1] == bytes([Kind.PONG]):
+            self._answered(Kind.PING)
+        elif (
+            isinstance(message, bytes)
+            and message[:1] == bytes([Kind.CONTROL])
+            and isinstance(read_control(message[5:]), TunnelUpdate)
+        ):
+            self._answered(Kind.CONTROL)
+        return message
+
+    async def close(self) -> None:
+        self._answered()
+        await self.ws.close()
+
+
 @dataclass(frozen=True)
 class Sent:
     """One request the agent sent the Portal, and how it was answered."""
@@ -97,6 +204,17 @@ class Sent:
     path: str
     status: int
     retry_after: str | None
+
+
+@dataclass(frozen=True)
+class TunnelAttempt:
+    """One tunnel open the agent tried, and how it went."""
+
+    at: datetime
+    status: int | None
+    """101: it opened; else the HTTP status it was refused with; ``None``:
+    it couldn't connect at all."""
+    retry_after: str | None = None
 
 
 class Traffic:
@@ -122,61 +240,15 @@ class Traffic:
         )
 
 
+POLLING_VERSION = 1
+"""The protocol version of an agent that only polls (its tunnel opens only
+on a Wake). A version 2 agent holds its tunnel, and polls only once it fell
+back; while reconnecting it makes no HTTPS requests at all."""
+
 LAN = [
     LanAddress(address="192.168.1.20", interface="eth0", primary=True),
     LanAddress(address="10.8.0.4", interface="wlan0", primary=False),
 ]
-
-
-class FakeDns:
-    """The agent's resolver: answers from ``records`` (else no such host)."""
-
-    def __init__(self) -> None:
-        self.records: dict[str, list[str]] = {}
-
-    async def __call__(self, host: str, port: int) -> list[str]:
-        if host not in self.records:
-            raise OSError(f"{host}: Name or service not known")
-        return list(self.records[host])
-
-
-class _NatSocket:
-    def __init__(self, udp: NatUdp, transport: asyncio.DatagramTransport) -> None:
-        self._udp, self._transport = udp, transport
-
-    def sendto(self, data: bytes, addr: tuple[str, int]) -> None:
-        self._udp.sent.append((data, addr))
-        local = self._udp.routes.get(addr)
-        if local is not None:
-            self._transport.sendto(data, local)
-
-    def close(self) -> None:
-        self._transport.close()
-
-
-class _NatProtocol(asyncio.DatagramProtocol):
-    def __init__(self, udp: NatUdp, on_datagram: Any) -> None:
-        self._udp, self._on_datagram = udp, on_datagram
-
-    def datagram_received(self, data: bytes, addr: Any) -> None:
-        source = (str(addr[0]), int(addr[1]))
-        public = {local: public for public, local in self._udp.routes.items()}
-        self._on_datagram(data, public.get(source, source))
-
-
-class NatUdp:
-    """The agent's ``open_udp``: real UDP on 127.0.0.1 with public addresses
-    translated (the base's router and the internet, in one)."""
-
-    def __init__(self) -> None:
-        self.routes: dict[tuple[str, int], tuple[str, int]] = {}
-        self.sent: list[tuple[bytes, tuple[str, int]]] = []
-
-    async def __call__(self, address: str, on_datagram: Any) -> _NatSocket:
-        transport, _ = await asyncio.get_running_loop().create_datagram_endpoint(
-            lambda: _NatProtocol(self, on_datagram), local_addr=("127.0.0.1", 0)
-        )
-        return _NatSocket(self, transport)
 
 
 class RunningAgent:
@@ -189,26 +261,36 @@ class RunningAgent:
         *,
         server_port: int | None = None,
         app_port: int | None = None,
+        transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
+        protocol_version: int = PROTOCOL_VERSION,
+        time: AgentTime | None = None,
     ) -> None:
         self.portal = portal
+        self._transport = transport
         self.server_port = server_port
         self.app_port = app_port
         self.tunnel_urls: list[str] = []
         """Every tunnel URL the agent tried to open."""
+        self.tunnel_attempts: list[TunnelAttempt] = []
+        """Every tunnel open the agent tried, when, and how it went."""
+        self.frames: list[Framed] = []
+        """Every tunnel frame the agent sent or received, in order."""
         self.state_dir = state_dir
         self.sock = sock
         self.ip = ip
-        self.time = AgentTime(portal.clock)
-        self.dns = FakeDns()
-        self.udp = NatUdp()
+        self.time = time if time is not None else AgentTime(portal.clock)
         self.lan: list[LanAddress] = list(LAN)
-        self.protocol_version = PROTOCOL_VERSION
-        """What the agent sends; raise it to "upgrade" sp-rtk-base."""
+        self.protocol_version = protocol_version
+        """What the agent speaks; change it, then ``restart()``, to play an
+        older or newer sp-rtk-base."""
         self.traffic = Traffic()
         self.requests: list[Sent] = []
         """Every request the agent sent, in order."""
         self.reachable = True
         """``False``: the base is cut off (its requests fail to connect)."""
+        self.upgrades_refused = False
+        """``True``: a proxy on the way refuses websocket upgrades (403), so
+        no tunnel opens, while HTTPS gets through."""
         self._tunnel_ws: Any = None
         self._agent: PortalAgent | None = None
         self._server: asyncio.Server | None = None
@@ -220,13 +302,30 @@ class RunningAgent:
 
     async def _tunnel_connect(self, url: str, headers: dict[str, str]) -> Any:
         self.tunnel_urls.append(url)
+        at = self.portal.clock.now()
         if self.server_port is None or not self.reachable:
+            self.tunnel_attempts.append(TunnelAttempt(at, None))
             raise OSError("no Portal served for the tunnel")
-        self._tunnel_ws = await ws_connect(
-            f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
-            additional_headers={**headers, "CF-Connecting-IP": self.ip},
-        )
-        return self._tunnel_ws
+        if self.upgrades_refused:
+            self.tunnel_attempts.append(TunnelAttempt(at, 403))
+            raise InvalidStatus(Response(403, "Forbidden", Headers()))
+        async with self.time.working():
+            try:
+                self._tunnel_ws = await ws_connect(
+                    f"ws://127.0.0.1:{self.server_port}{urlsplit(url).path}",
+                    additional_headers={**headers, "CF-Connecting-IP": self.ip},
+                )
+            except InvalidStatus as exc:
+                response = exc.response
+                self.tunnel_attempts.append(
+                    TunnelAttempt(
+                        at, response.status_code, response.headers.get("Retry-After")
+                    )
+                )
+                raise
+        self.tunnel_attempts.append(TunnelAttempt(at, 101))
+        self.time.serving()
+        return _RecordedWebSocket(self._tunnel_ws, self)
 
     def drop_tunnel(self) -> None:
         """The network drops the base's tunnel (its TCP connection dies)."""
@@ -234,20 +333,21 @@ class RunningAgent:
         self._tunnel_ws.transport.abort()
 
     async def start(self) -> None:
-        extra: dict[str, Any] = {
-            "tunnel_connect": self._tunnel_connect,
-            "open_udp": self.udp,
-        }
+        extra: dict[str, Any] = {"tunnel_connect": self._tunnel_connect}
         if self.app_port is not None:
             extra["app_port"] = self.app_port
         self._agent = PortalAgent(
             self.state_dir,
             portal_url=self.portal.origin,
-            transport=CloudflareTransport(self.portal.app, self.ip, self),
+            transport=_Working(
+                self._transport(self)
+                if self._transport is not None
+                else CloudflareTransport(self.portal.app, self.ip, self),
+                self.time,
+            ),
             now=self.portal.clock.now,
             sleep=self.time.sleep,
             name="pi-north",
-            resolve=self.dns,
             lan_addresses=lambda: list(self.lan),
             protocol_version=self.protocol_version,
             **extra,
@@ -287,12 +387,17 @@ class RunningAgent:
         return await read_status(self.sock)
 
     async def pause(self) -> AgentStatus:
-        """The local page's "Pause remote access" (tells the Portal at once)."""
-        return await pause(self.sock)
+        """The local page's "Pause remote access" (tells the Portal at once,
+        and the Portal has heard it on return)."""
+        status = await pause(self.sock)
+        await self.time.done()
+        return status
 
     async def resume(self) -> AgentStatus:
         """The local page's "Resume remote access"."""
-        return await resume(self.sock)
+        status = await resume(self.sock)
+        await self.time.done()
+        return status
 
     async def unclaim(self) -> AgentStatus:
         """The local page's Un-claim."""
@@ -327,7 +432,15 @@ async def running_agent(
     *,
     server_port: int | None = None,
     app_port: int | None = None,
+    transport: Callable[[RunningAgent], httpx.AsyncBaseTransport] | None = None,
+    protocol_version: int = PROTOCOL_VERSION,
+    time: AgentTime | None = None,
 ) -> AsyncIterator[RunningAgent]:
+    """``transport``: what carries the agent's HTTPS (by default
+    :class:`CloudflareTransport`; see :mod:`.wire`). ``protocol_version``:
+    what the agent speaks (``1``: an agent that only polls). ``time``: the
+    virtual time it sleeps on (by default its own; several agents on one
+    clock need to share one, so that moving it wakes all of them)."""
     # AF_UNIX paths are capped near 108 bytes: keep the temp dir short.
     with tempfile.TemporaryDirectory(prefix="agent-") as d:
         agent = RunningAgent(
@@ -337,6 +450,9 @@ async def running_agent(
             ip,
             server_port=server_port,
             app_port=app_port,
+            transport=transport,
+            protocol_version=protocol_version,
+            time=time,
         )
         await agent.start()
         try:

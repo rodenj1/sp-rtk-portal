@@ -9,9 +9,20 @@ must, so additive changes need no version bump) and raises
 from __future__ import annotations
 
 import dataclasses
+import json
 from dataclasses import dataclass
 from types import UnionType
-from typing import Any, ClassVar, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import (
+    Any,
+    ClassVar,
+    Final,
+    Literal,
+    TypeVar,
+    Union,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 T = TypeVar("T", bound="Message")
 
@@ -53,8 +64,13 @@ class _Mistyped(Exception):
 
 def _parse(value: Any, expected: Any) -> Any:
     """``value`` as the field type ``expected``: a plain type (``str``,
-    ``int``, ``bool``...), a :class:`Message`, ``list[X]`` or ``X | None``."""
+    ``int``, ``bool``...), a :class:`Message`, ``list[X]``, ``X | None`` or
+    a ``Literal`` of strings."""
     origin = get_origin(expected)
+    if origin is Literal:
+        if value not in get_args(expected):
+            raise _Mistyped
+        return value
     if origin is Union or origin is UnionType:
         for arm in get_args(expected):
             if arm is type(None):
@@ -187,20 +203,6 @@ TUNNEL_PATH = "/agent/tunnel"
 """The tunnel's websocket path; the agent's built-in tunnel URL is
 ``wss://<Portal host>`` + this."""
 
-# Doorbell health, as a Check-in reports it.
-DOORBELL_OFF = "off"
-"""No Doorbell host in the agent config: the base polls."""
-DOORBELL_IGNORED = "ignored"
-"""The configured host didn't resolve, or resolved to a private, loopback or
-link-local address: the agent ignores it and polls."""
-DOORBELL_UNAVAILABLE = "unavailable"
-"""A usable host is configured and the agent sends keepalives to it, but the
-Portal hasn't heard them lately (or the agent predates the Doorbell): it
-polls."""
-DOORBELL_OK = "ok"
-"""The Portal hears the base's keepalives: the base is woken by a ring (wake
-mode Doorbell) and stops polling."""
-
 
 @dataclass(frozen=True)
 class AgentConfig(Message):
@@ -215,15 +217,33 @@ class AgentConfig(Message):
     poll_interval: int = 20
     metered_poll_interval: int = 60
     check_in_interval: int = 300
-    doorbell_host: str | None = None
-    doorbell_port: int | None = None
     tunnel_url: str = ""
     """``wss://`` on the Portal's own host; empty means the agent's built-in
     ``wss://<Portal host>/agent/tunnel``. The agent ignores any other."""
     tunnel_idle_timeout: int = 120
-    """Close the tunnel this long after the last browser leaves."""
+    """End a Remote session this long after its last Session bar closed."""
     tunnel_hard_cap: int = 3600
     """A Remote session's hard cap."""
+    ping_interval: int = 50
+    """How often an agent holding its tunnel pings the Portal (the Portal
+    never pings)."""
+    tunnel_silence_timeout: int = 120
+    """The Portal closes a held tunnel that sent nothing for this long
+    (informational for the agent: it pings well within it)."""
+    lease_length: int = 300
+    """How long a Remote session's path token lives after its Session bar
+    last renewed it (Session bar only: the agent ignores it)."""
+    lease_renewal_interval: int = 60
+    """How often the Session bar renews the lease (Session bar only)."""
+    reconnect_backoff_cap: int = 600
+    """The longest an agent waits between tries to open its tunnel again
+    after a drop (it backs off up to this, with jitter)."""
+    fallback_failures: int = 3
+    """Tunnel opens failed in a row (while HTTPS gets through) after which
+    the agent falls back to polling (a count, not seconds)."""
+    fallback_retry_interval: int = 900
+    """How often an agent that fell back to polling tries its tunnel
+    again."""
 
 
 @dataclass(frozen=True)
@@ -244,7 +264,8 @@ class Poll(Message):
 
 @dataclass(frozen=True)
 class LiveSession(Message):
-    """A live Remote session on the base, for its local Portal page."""
+    """A live Remote session on the base, for its local Portal page and its
+    own record of Remote sessions (the Event log)."""
 
     who: str
     """The user's email."""
@@ -252,6 +273,54 @@ class LiveSession(Message):
     """When the Remote session started (ISO 8601, UTC)."""
     shared: bool = False
     """The user has the base through a Share (not its Operator)."""
+    id: str = ""
+    """The Remote session's id, unique on the Portal (protocol package
+    0.10.0), so the agent can match an :class:`EndedSession` to its start.
+    Empty from an older Portal."""
+
+
+END_LEFT = "left"
+"""The user left: logged out, or left the Share."""
+END_IDLE = "idle"
+"""Nobody had the Session bar open for the idle timeout."""
+END_PAUSED = "paused"
+"""Remote access was paused on the base."""
+END_LEASE_EXPIRED = "lease_expired"
+"""The path token's lease ran out (the Session bar stopped renewing it)."""
+END_REVOKED = "revoked"
+"""The Portal took the user's access away: un-Share, Un-claim, account
+deletion."""
+END_HARD_CAP = "hard_cap"
+"""The Remote session reached its hard cap."""
+
+END_REASONS = (
+    END_LEFT,
+    END_IDLE,
+    END_PAUSED,
+    END_LEASE_EXPIRED,
+    END_REVOKED,
+    END_HARD_CAP,
+)
+"""Why a Remote session ended, as the base hears it. A reader shows any
+other value as is (a newer Portal may add reasons)."""
+
+
+@dataclass(frozen=True)
+class EndedSession(Message):
+    """A Remote session that ended, with its reason: the whole record, so
+    the base can log a session it never saw live. A poll reply carries the
+    recent ones; the tunnel's Session ended message carries the same."""
+
+    id: str
+    """As in :attr:`LiveSession.id`."""
+    who: str
+    since: str
+    """When it started (ISO 8601, UTC)."""
+    at: str
+    """When it ended (ISO 8601, UTC)."""
+    reason: str
+    """One of :data:`END_REASONS`."""
+    shared: bool = False
 
 
 @dataclass(frozen=True)
@@ -269,6 +338,10 @@ class PollReply(Message):
     sessions: list[LiveSession] = dataclasses.field(default_factory=list)
     """The base's live Remote sessions, oldest first (protocol package
     0.6.0): its local Portal page lists them."""
+    ended: list[EndedSession] = dataclasses.field(default_factory=list)
+    """Remote sessions on the base that ended lately, oldest first (protocol
+    package 0.10.0). The same end may come in several replies: the agent
+    keeps each id once."""
 
 
 @dataclass(frozen=True)
@@ -280,19 +353,39 @@ class LanAddress(Message):
     """On the interface that holds the default route."""
 
 
+MODE_HOLDING: Final = "holding"
+"""Connection mode: the agent holds its tunnel open (protocol version 2)."""
+MODE_RECONNECTING: Final = "reconnecting"
+"""Connection mode: a version 2 agent whose held tunnel isn't open (yet, or
+any more): it backs off and tries again."""
+MODE_POLLING: Final = "polling"
+"""Connection mode: the Portal reaches the base only by Waking it through
+its polls (a version 1 agent, or a version 2 agent that fell back)."""
+
+ConnectionMode = Literal["holding", "reconnecting", "polling"]
+"""How the Portal reaches a Claimed base (ADR 0006). Offline isn't one: the
+Portal tells it from when it last heard from the base."""
+
+CONNECTION_MODES: tuple[ConnectionMode, ...] = (
+    MODE_HOLDING,
+    MODE_RECONNECTING,
+    MODE_POLLING,
+)
+
+
 @dataclass(frozen=True)
 class CheckIn(Message):
     """Body of a Check-in. The protocol version is in the version header; the
     base's public IP is the one Cloudflare reports."""
 
     software_version: str = ""
-    doorbell: str = DOORBELL_OFF
-    """Doorbell health: one of the ``DOORBELL_*`` values."""
     lan_addresses: list[LanAddress] = dataclasses.field(default_factory=list)
     paused: bool | None = None
-    """Remote access paused on site, as on a poll (``Poll.state``): a base
-    that rarely polls (Doorbell mode) still reports it. ``None``: an agent
-    from before this field, which says nothing either way."""
+    """Remote access paused on site, as on a poll (``Poll.state``). ``None``:
+    an agent from before this field, which says nothing either way."""
+    mode: ConnectionMode | None = None
+    """The agent's connection mode (one of :data:`CONNECTION_MODES`;
+    protocol package 0.10.0). ``None`` from an older agent."""
 
 
 @dataclass(frozen=True)
@@ -300,12 +393,6 @@ class CheckInReply(Message):
     config: AgentConfig
     metered: bool = False
     notices: list[Notice] = dataclasses.field(default_factory=list)
-    doorbell_heard: bool = False
-    """The Portal has heard this base's Doorbell keepalives lately (through
-    the Doorbell server): the agent may stop polling and rely on rings."""
-    ring_key: str | None = None
-    """The base's ring key (base64url), when the agent config names a
-    Doorbell host: rings are authenticated with it (see :mod:`.doorbell`)."""
 
 
 @dataclass(frozen=True)
@@ -319,3 +406,56 @@ class UpgradeRequired(Message):
     min_version: int
     message: str = ""
     error: str = "upgrade_required"
+
+
+# --- Control messages on a held tunnel (ADR 0006) ---------------------------
+#
+# A base holding its tunnel sends no polls or Check-ins: each side sends
+# control messages on the tunnel instead (a ``CONTROL`` frame each, see
+# :mod:`.tunnel`). The agent sends a :class:`CheckIn` on connect, every
+# ``check_in_interval`` and whenever its contents change; the Portal sends a
+# :class:`TunnelUpdate` on connect and whenever it changes, and a
+# :class:`EndedSession` for each Remote session that ends.
+
+
+@dataclass(frozen=True)
+class TunnelUpdate(Message):
+    """What a poll reply carries, minus the Wake: the agent config block,
+    the metered flag, the notices and the live Remote sessions. Each one is
+    the whole picture, replacing the last."""
+
+    config: AgentConfig
+    metered: bool = False
+    notices: list[Notice] = dataclasses.field(default_factory=list)
+    sessions: list[LiveSession] = dataclasses.field(default_factory=list)
+
+
+CONTROL_TYPES: dict[str, type[Message]] = {
+    "check_in": CheckIn,
+    "update": TunnelUpdate,
+    "session_ended": EndedSession,
+}
+"""Each control message's ``type``. A receiver ignores a type it doesn't
+know (a newer peer may add some)."""
+
+
+def control_message(message: Message) -> bytes:
+    """``message`` as a control frame's payload: its JSON with its ``type``."""
+    for name, cls in CONTROL_TYPES.items():
+        if type(message) is cls:
+            body = {"type": name, **message.to_json()}
+            return json.dumps(body, separators=(",", ":")).encode()
+    raise TypeError(f"{type(message).__name__} isn't a control message")
+
+
+def read_control(payload: bytes) -> Message | None:
+    """A control frame's message, or ``None`` for a type this side doesn't
+    know. Raises :class:`MessageError` for one that isn't a message."""
+    try:
+        body = json.loads(payload)
+    except ValueError:
+        raise MessageError("a control message that isn't JSON") from None
+    if not isinstance(body, dict) or not isinstance(body.get("type"), str):
+        raise MessageError("a control message without a type")
+    cls = CONTROL_TYPES.get(body["type"])
+    return cls.from_json(body) if cls is not None else None

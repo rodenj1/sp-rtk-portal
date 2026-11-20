@@ -1,8 +1,10 @@
 """The tunnel: many byte streams multiplexed over one websocket.
 
-A Woken agent opens ``wss://<Portal host>/agent/tunnel`` (a GET signed with
-its base key, echoing the Wake nonce in the proof's ``nonce`` claim). Inside,
-every binary websocket message is one frame (SniTun-style):
+An agent opens ``wss://<Portal host>/agent/tunnel`` with a GET signed with
+its base key: a Claimed base holding its tunnel (protocol version 2) signs
+it with no nonce and keeps it open; a Woken one echoes the Wake nonce in the
+proof's ``nonce`` claim. Inside, every binary websocket message is one frame
+(SniTun-style):
 
 ====  ========  =========  ==============================================
 byte  1         4          rest
@@ -19,9 +21,16 @@ Types (:class:`Kind`):
 - ``DATA`` (2): 1..:data:`MAX_DATA` bytes for stream ``id``.
 - ``CLOSE`` (3): stream ``id`` is finished, both ways. No payload.
 - ``PING`` (4) / ``PONG`` (5): stream 0, up to :data:`MAX_PING` bytes; a
-  ``PING`` is answered with a ``PONG`` carrying the same payload.
+  ``PING`` is answered with a ``PONG`` carrying the same payload. Only the
+  agent pings (every ``AgentConfig.ping_interval``); the Portal closes a
+  held tunnel that sent nothing for ``AgentConfig.tunnel_silence_timeout``.
 - ``PAUSE`` (6) / ``RESUME`` (7): flow control for stream ``id``: stop
   (resume) sending ``DATA`` on it. No payload.
+- ``CONTROL`` (8): stream 0, 1..:data:`MAX_DATA` bytes: one control
+  message (:func:`~sp_rtk_portal_protocol.messages.control_message`) on a
+  held tunnel: the agent's Check-ins, and the Portal's config, notices and
+  Remote sessions. Only a version 2 agent's held tunnel carries them (a
+  version 1 agent would close its tunnel on the unknown type).
 
 Anything else (an unknown type, a payload where none belongs, stream 0 for
 a stream frame, a ``NEW`` from the agent, a second ``NEW`` for a live
@@ -46,6 +55,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
 
+from sp_rtk_portal_protocol.messages import Message, MessageError, read_control
+
 logger = logging.getLogger(__name__)
 
 MAX_DATA = 64 * 1024
@@ -59,6 +70,17 @@ _HEADER = struct.Struct("!BI")
 
 class FrameError(Exception):
     """A frame that must close the tunnel. The message says why (for logs)."""
+
+
+def read_control_frame(payload: bytes) -> Message | None:
+    """A ``CONTROL`` frame's message, as :func:`~.messages.read_control`
+    reads it (``None`` for a type this side doesn't know), for an
+    ``on_control``: one that isn't a message is a :class:`FrameError`, so the
+    receiver closes the tunnel as for a bad frame."""
+    try:
+        return read_control(payload)
+    except MessageError as exc:
+        raise FrameError(str(exc)) from None
 
 
 class StreamClosed(Exception):
@@ -77,6 +99,7 @@ class Kind(enum.IntEnum):
     PONG = 5
     PAUSE = 6
     RESUME = 7
+    CONTROL = 8
 
 
 _NO_PAYLOAD = frozenset({Kind.NEW, Kind.CLOSE, Kind.PAUSE, Kind.RESUME})
@@ -91,6 +114,12 @@ class Frame:
 
 
 def _check(frame: Frame) -> None:
+    if frame.kind == Kind.CONTROL:
+        if frame.stream != 0:
+            raise FrameError(f"CONTROL on stream {frame.stream}")
+        if not 0 < len(frame.payload) <= MAX_DATA:
+            raise FrameError(f"CONTROL frame of {len(frame.payload)} bytes")
+        return
     if frame.kind in _CONNECTION:
         if frame.stream != 0:
             raise FrameError(f"{frame.kind.name} on stream {frame.stream}")
@@ -212,7 +241,9 @@ class Tunnel:
 
     ``role="portal"`` opens streams (:meth:`open_stream`); ``role="agent"``
     accepts them, calling ``on_new_stream(stream)`` in a task of its own for
-    each. :meth:`feed` raises :class:`FrameError` for a frame that must close
+    each. Either end sends control messages with :meth:`send_control` and
+    hears them through ``on_control(payload)``, awaited in order (without
+    one, they're ignored). :meth:`feed` raises :class:`FrameError` for a frame that must close
     the tunnel; the caller then closes the websocket and calls
     :meth:`close`.
     """
@@ -223,11 +254,13 @@ class Tunnel:
         *,
         role: Literal["portal", "agent"],
         on_new_stream: Callable[[Stream], Awaitable[None]] | None = None,
+        on_control: Callable[[bytes], Awaitable[None]] | None = None,
         window: int = DEFAULT_WINDOW,
     ) -> None:
         self._send = send
         self.role = role
         self._on_new_stream = on_new_stream
+        self._on_control = on_control
         self.window = window
         self.chunk = min(MAX_DATA, max(1, window // 4))
         self._streams: dict[int, Stream] = {}
@@ -255,6 +288,10 @@ class Tunnel:
     async def ping(self, payload: bytes = b"") -> None:
         await self._send_frame(Frame(Kind.PING, 0, payload))
 
+    async def send_control(self, payload: bytes) -> None:
+        """Send one control message (raises :class:`TunnelClosed`)."""
+        await self._send_frame(Frame(Kind.CONTROL, 0, payload))
+
     async def feed(self, data: bytes) -> None:
         """Handle one incoming websocket message."""
         frame = decode(data)
@@ -262,6 +299,10 @@ class Tunnel:
             await self._send_frame(Frame(Kind.PONG, 0, frame.payload))
             return
         if frame.kind == Kind.PONG:
+            return
+        if frame.kind == Kind.CONTROL:
+            if self._on_control is not None:
+                await self._on_control(frame.payload)
             return
         if frame.kind == Kind.NEW:
             self._accept(frame.stream)

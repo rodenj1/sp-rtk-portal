@@ -1,12 +1,17 @@
 """What the Session bar shows: one status message per change, sent over its
 status channel (``/bases/<id>/session``).
 
-``{"state": "waking" | "reconnecting" | "didnt_wake" | "connected" | "ended",
+``{"state": "waking" | "connecting" | "reconnecting" | "didnt_wake" |
+"connected" | "ended",
 "reason": <why it ended> | None, "frame": "/b/<id>/s/<token>/" (until it
 ends), "still_there": bool, "cap_at": ISO time the hard cap pauses it,
 "present": [{"name", "role"}] (other users with a Session bar open on this
-base), "last_seen": "YYYY-MM-DD HH:MM UTC" | "never", "wake_mode": "Doorbell"
-| "Polling every 20 s" ...}``.
+base), "last_seen": "YYYY-MM-DD HH:MM UTC" | "never", "connection": how the
+Portal reaches the base, in words ("Holding its tunnel", "Polling every 20 s"...),
+"holds": bool (it holds its tunnel, or is reconnecting it, rather than
+polling), "renew": bool (renew the lease now: the bar
+answers ``{"type": "renew"}``), "lease_expires_at": ISO time the path token
+is refused unless renewed (until it ends)}``.
 
 An ended session with reason ``hard_cap`` is shown as Session paused.
 """
@@ -14,6 +19,8 @@ An ended session with reason ``hard_cap`` is shown as Session paused.
 from __future__ import annotations
 
 from typing import Any
+
+from sp_rtk_portal_protocol import MODE_POLLING
 
 from sp_rtk_portal.agent_api import config as agent_config
 from sp_rtk_portal.bases import online, store
@@ -35,6 +42,7 @@ def labels(base_name: str) -> dict[str, str]:
     ``session.html``."""
     return {
         "waking": f"Waking {base_name}…",
+        "connecting": f"Connecting to {base_name}…",
         "reconnecting": "Reconnecting…",
         "didnt_wake": "Didn't wake",
         "connected": "Connected",
@@ -44,6 +52,12 @@ def labels(base_name: str) -> dict[str, str]:
         "ended": "Session ended",
         "none": "Not connected",
     }
+
+
+def holds(base: store.BaseSummary) -> bool:
+    """The base holds its tunnel (or is getting it back): it comes back by
+    itself, never through a Wake."""
+    return base.connection_mode != MODE_POLLING
 
 
 def last_seen(base: store.BaseSummary) -> str:
@@ -67,12 +81,16 @@ async def status(ctx: PortalContext, session: RemoteSession) -> dict[str, Any]:
         "still_there": broker.still_there(session),
         "cap_at": broker.cap_at(session).isoformat(),
         "present": present,
+        "renew": broker.renewal_due(session),
     }
     if not session.ended:
         message["frame"] = frame_path(session)
+        if session.lease_expires_at is not None:
+            message["lease_expires_at"] = session.lease_expires_at.isoformat()
     if base is not None:
         message["last_seen"] = last_seen(base)
-        message["wake_mode"] = online.wake_mode(base, config)
+        message["connection"] = online.connection_mode_words(base, config)
+        message["holds"] = holds(base)
     return message
 
 

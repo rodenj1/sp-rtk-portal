@@ -55,7 +55,10 @@ async def test_open_remotely_shows_waking_with_the_hint_then_connected(
     async with (
         running_portal(database_url, clock, authentik, origin=origin) as portal,
         serving(portal.app, sock) as port,
-        running_agent(portal, server_port=port, app_port=served.port) as agent,
+        # A polling base (protocol version 1): reached through a Wake.
+        running_agent(
+            portal, server_port=port, app_port=served.port, protocol_version=1
+        ) as agent,
     ):
         page = await browser_app.new_page()
         await sign_in(page, portal)
@@ -71,7 +74,7 @@ async def test_open_remotely_shows_waking_with_the_hint_then_connected(
 
         status = page.locator("[data-field=status]")
         await expect(status).to_have_text("Waking North field…")
-        await expect(page.locator("[data-field=hint]")).to_contain_text(
+        await expect(page.locator("[data-field=hint-polling]")).to_contain_text(
             "checks for requests every 20 s"
         )
         await expect(page.locator("[data-field=progress]")).to_be_visible()
@@ -103,9 +106,9 @@ async def test_the_session_bar_ignores_message_events(
         await claim(page, agent, origin)
         await page.get_by_role("button", name="Open remotely").click()
         status = page.locator("[data-field=status]")
-        await expect(status).to_have_text("Waking North field…")
-        await agent.run(seconds=20)
-        await expect(status).to_have_text("Connected")
+        await expect(status).to_have_text("Connected")  # it holds its tunnel
+        # (Connected from the first render: wait for the bar's script too.)
+        await expect(page.locator("iframe[data-field=frame]")).to_have_count(1)
 
         heard = await page.evaluate(
             """() => new Promise((resolve) => {

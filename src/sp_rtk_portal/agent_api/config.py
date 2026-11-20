@@ -7,16 +7,16 @@ an agent applies a block only when the revision differs from its own. With no
 row yet the Portal serves the built-in defaults as revision 1.
 
 The Portal refuses a config the agent would ignore (a timing out of range, a
-tunnel URL that isn't ``wss://`` on the Portal's own host, a Doorbell host
-without a port); the agent checks the same things again, since it doesn't
-trust the Portal with its network.
+tunnel URL that isn't ``wss://`` on the Portal's own host); the agent checks
+the same things again, since it doesn't trust the Portal with its network.
+A row saved before the Doorbell was dropped (ADR 0006) still names a Doorbell
+host and port: reading it ignores them, as it ignores any unknown field.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import json
-import re
 from datetime import datetime
 from typing import Any
 from urllib.parse import urlsplit
@@ -34,11 +34,18 @@ RANGES: dict[str, tuple[int, int]] = {
     "check_in_interval": (60, 86400),
     "tunnel_idle_timeout": (10, 86400),
     "tunnel_hard_cap": (60, 86400),
+    "ping_interval": (10, 600),
+    "tunnel_silence_timeout": (30, 3600),
+    "lease_length": (60, 3600),
+    "lease_renewal_interval": (10, 600),
+    "reconnect_backoff_cap": (60, 3600),
+    "fallback_failures": (1, 100),
+    "fallback_retry_interval": (60, 86400),
 }
-"""Seconds; the agent ignores a value outside these (sp-rtk-base
-``portal_agent.agent_config.RANGES``)."""
-
-_HOSTNAME = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9-]{1,63}\.)*[A-Za-z0-9-]{1,63}$")
+"""Seconds (``fallback_failures`` is a count); the agent ignores a value outside these (sp-rtk-base
+``portal_agent.agent_config.RANGES``; it doesn't use the Remote session
+limits or the silence timeout, which only the Portal applies). The lease
+ones are the Session bar's alone: the agent has no range for them."""
 
 
 class ConfigRefused(Exception):
@@ -74,16 +81,11 @@ def updated(
         if name not in fields:
             continue
         text = "" if raw is None else str(raw).strip()
-        if name in RANGES or name == "doorbell_port":
-            if text == "" and name == "doorbell_port":
-                changes[name] = None
-                continue
+        if name in RANGES:
             try:
                 changes[name] = int(text)
             except ValueError:
                 raise ConfigRefused(f"{name} must be a whole number") from None
-        elif name == "doorbell_host":
-            changes[name] = text or None
         else:
             changes[name] = text
     config = dataclasses.replace(base, **changes)
@@ -96,6 +98,13 @@ def check(config: AgentConfig, settings: Settings) -> None:
         value = getattr(config, name)
         if not low <= value <= high:
             raise ConfigRefused(f"{name} must be between {low} and {high} seconds")
+    if config.ping_interval >= config.tunnel_silence_timeout:
+        raise ConfigRefused(
+            "ping_interval must be shorter than tunnel_silence_timeout, or the "
+            "Portal closes every held tunnel"
+        )
+    if config.lease_renewal_interval >= config.lease_length:
+        raise ConfigRefused("lease_renewal_interval must be shorter than lease_length")
     if config.tunnel_url:
         portal = urlsplit(settings.public_origin)
         url = urlsplit(config.tunnel_url)
@@ -104,12 +113,6 @@ def check(config: AgentConfig, settings: Settings) -> None:
                 f"The tunnel URL must be wss://{portal.netloc}/...: an agent "
                 "ignores any other"
             )
-    if config.doorbell_host is not None:
-        if not _HOSTNAME.match(config.doorbell_host):
-            raise ConfigRefused("The Doorbell host must be a host name")
-        port = config.doorbell_port
-        if port is None or not 0 < port < 65536:
-            raise ConfigRefused("A Doorbell host needs a port (1-65535)")
 
 
 async def save(

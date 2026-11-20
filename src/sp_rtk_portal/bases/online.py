@@ -1,12 +1,15 @@
-"""Online state (ADR 0002): a base is online from its latest sign of life
-(a poll, a Check-in or a Doorbell keepalive) until about 3 beats of its
-current mode are missed.
+"""Online state (ADRs 0002, 0006).
+
+A base holding its tunnel is online while the tunnel is connected, and for
+:data:`HELD_GRACE` after its last sign of life once it drops
+(``reconnecting``), so a Portal restart or a short glitch doesn't flash it
+offline. A polling base is online from its latest sign of life (a poll or a
+Check-in) until about 3 beats are missed.
 An online base whose agent reports remote access paused is "paused": it
 keeps in touch, but ignores Wakes.
 
-On a Doorbell (its latest Check-in said ``ok``) the beat is the keepalive
-interval plus its jitter: 75 s. Otherwise the beat is the poll interval from
-the agent config, the metered one when the base is metered. Just after the Operator unmarks metered, the base may
+The beat is the poll interval from the agent config, the metered one when
+the base is metered. Just after the Operator unmarks metered, the base may
 still sleep the metered interval it was last told, so the longer of the two
 counts until its next poll.
 """
@@ -16,21 +19,14 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from typing import Literal
 
-from sp_rtk_portal_protocol import (
-    DOORBELL_INTERVAL,
-    DOORBELL_JITTER,
-    DOORBELL_OK,
-    AgentConfig,
-)
+from sp_rtk_portal_protocol import MODE_HOLDING, MODE_RECONNECTING, AgentConfig
 
 from sp_rtk_portal.bases.store import BaseSummary
 
 MISSED_BEATS = 3
 
-DOORBELL_OFFLINE_AFTER = timedelta(
-    seconds=MISSED_BEATS * (DOORBELL_INTERVAL + DOORBELL_JITTER)
-)
-"""A base on a Doorbell is offline after this long without a keepalive."""
+HELD_GRACE = timedelta(minutes=2)
+"""How long a base whose held tunnel dropped stays online."""
 
 State = Literal["online", "offline", "needs-upgrade", "never-seen", "paused"]
 
@@ -48,8 +44,8 @@ def interval(config: AgentConfig, metered: bool) -> int:
 
 
 def offline_after(base: BaseSummary, config: AgentConfig) -> timedelta:
-    if base.doorbell == DOORBELL_OK:
-        return DOORBELL_OFFLINE_AFTER
+    if base.connection_mode == MODE_RECONNECTING:
+        return HELD_GRACE
     beat = max(interval(config, base.metered), interval(config, base.polled_metered))
     return timedelta(seconds=MISSED_BEATS * beat)
 
@@ -59,16 +55,25 @@ def state(base: BaseSummary, config: AgentConfig, now: datetime) -> State:
         return "needs-upgrade"  # not offline: it asks once a day
     if base.last_seen_at is None:
         return "never-seen"
-    if now - base.last_seen_at > offline_after(base, config):
+    if base.connection_mode != MODE_HOLDING and (
+        now - base.last_seen_at > offline_after(base, config)
+    ):
         return "offline"
     if base.remote_paused:
         return "paused"  # online, but it won't wake until resumed on site
     return "online"
 
 
-def wake_mode(base: BaseSummary, config: AgentConfig) -> str:
-    """How a Wake reaches the base, in words."""
-    if base.doorbell == "ok":
-        return "Doorbell"
+def is_online(base: BaseSummary, config: AgentConfig, now: datetime) -> bool:
+    """Online, paused or not."""
+    return state(base, config, now) in ("online", "paused")
+
+
+def connection_mode_words(base: BaseSummary, config: AgentConfig) -> str:
+    """How the Portal reaches the base (its connection mode), in words."""
+    if base.connection_mode == MODE_HOLDING:
+        return "Holding its tunnel"
+    if base.connection_mode == MODE_RECONNECTING:
+        return "Reconnecting its tunnel"
     mode = f"Polling every {interval(config, base.metered)} s"
     return mode + " (metered)" if base.metered else mode

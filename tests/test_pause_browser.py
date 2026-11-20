@@ -84,7 +84,7 @@ async def test_paused_offline_and_online_bases_look_different_in_the_list(
 
         await north.pause()
         await south.stop()  # South goes quiet...
-        await north.run(minutes=2)  # ...while North keeps polling, paused
+        await north.run(minutes=3)  # ...while North keeps polling, paused
         await page.reload()
 
         paused = page.locator(f"li[data-base='{north_id}']")
@@ -128,9 +128,9 @@ async def test_an_open_session_bar_says_when_the_base_is_paused(
         await page.reload()
         await page.get_by_role("button", name="Open remotely").click()
         status = page.locator("[data-field=status]")
-        await expect(status).to_have_text("Waking North field…")
-        await agent.run(seconds=20)
-        await expect(status).to_have_text("Connected")
+        await expect(status).to_have_text("Connected")  # it holds its tunnel
+        # (Connected from the first render: wait for the bar's script too.)
+        await expect(page.locator("iframe[data-field=frame]")).to_have_count(1)
 
         await agent.pause()
 

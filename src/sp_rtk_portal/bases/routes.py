@@ -39,7 +39,7 @@ async def base_list(
             base=base,
             state=(state := online.state(base, config, now)),
             state_label=online.LABELS[state],
-            poll_interval=online.interval(config, base.metered),
+            connection=online.connection_mode_words(base, config),
             update=latest
             if agent_config.update_available(base.software_version, latest)
             else None,
@@ -73,7 +73,10 @@ class BaseCard:
     base: store.BaseSummary
     state: online.State
     state_label: str
-    poll_interval: int
+    connection: str
+    """How the Portal reaches it (its connection mode), in words: holding,
+    reconnecting, or polling every N s. Shown next to its online state while
+    it's online."""
     update: str | None
     """A newer sp-rtk-base release, shown as information."""
     local_access: local.LocalAccess | None = None
@@ -92,11 +95,12 @@ async def set_metered(
     ctx: PortalContext = Depends(portal_context),
 ) -> JSONResponse:
     """The Operator marks their base metered (it then polls every 60 s), or
-    not. The base learns it on its next poll."""
+    not. The base learns it on its held tunnel at once, or on its next poll."""
     async with ctx.db.connection() as conn:
         found = await store.set_metered(conn, base_id, account.id, body.metered)
     if not found:
         return JSONResponse({"error": "No such base."}, status_code=404)
+    await ctx.tunnels.push(base_id)
     return JSONResponse({"next": "/"})
 
 

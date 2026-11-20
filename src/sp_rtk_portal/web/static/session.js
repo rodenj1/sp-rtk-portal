@@ -6,7 +6,17 @@
 // never talk to this page (no postMessage).
 //
 // The Portal decides every state (its clock, not the browser's); this script
-// only shows them. A state is shown by the elements whose data-show lists it.
+// only shows them. A state is shown by the elements whose data-show lists it;
+// elements with data-holds show only while the base holds its tunnel
+// ("true": it comes back by itself) or only while it polls ("false": Wakes).
+//
+// Lease (ADR 0005): the frame's path token lives only while this bar renews
+// it. The Portal asks for a renewal every 60 s (a status message with
+// `renew`) and the bar answers on the channel, so a hidden tab's throttled
+// timers don't matter. A session whose lease expired (the laptop slept), or
+// a channel that dropped, is handled like a tunnel drop: one automatic
+// reconnect (Open remotely again, then follow the new session), then the
+// ended state.
 "use strict";
 
 (function () {
@@ -61,6 +71,14 @@
     bar.querySelectorAll("[data-show]").forEach((el) => {
       el.hidden = !el.dataset.show.split(" ").includes(view);
     });
+    holds(bar.dataset.holds);
+  }
+
+  function holds(value) {
+    bar.dataset.holds = value;
+    bar.querySelectorAll("[data-holds]").forEach((el) => {
+      if (el !== bar) el.hidden = el.dataset.holds !== value;
+    });
   }
 
   function presence(others) {
@@ -83,18 +101,53 @@
     if (view !== "connected" || stillThere) fullScreen(false);
     presence(msg.state === "ended" ? [] : msg.present || []);
     if (msg.last_seen) field("last-seen").textContent = msg.last_seen;
-    if (msg.wake_mode) field("wake-mode").textContent = msg.wake_mode;
+    if (msg.connection) field("connection").textContent = msg.connection;
+    if (typeof msg.holds === "boolean") holds(String(msg.holds));
   }
 
   // No Remote session (yet): nothing to follow.
   if (["none", "ended", "offline", "remote_paused"].includes(bar.dataset.state)) return;
+  const base = "/bases/" + encodeURIComponent(bar.dataset.base);
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
-  const channel = new WebSocket(
-    scheme + "//" + location.host + "/bases/" + encodeURIComponent(bar.dataset.base) + "/session"
-  );
-  channel.addEventListener("message", (event) => {
-    let msg = {};
-    try { msg = JSON.parse(event.data); } catch (e) { return; }
-    if (msg.state) update(msg);
-  });
+  let reconnects = 1; // automatic reconnects left; back to one once Connected
+  let leaving = false;
+  window.addEventListener("pagehide", () => { leaving = true; });
+
+  function follow() {
+    let over = false; // the Portal said it ended: its close is expected
+    const channel = new WebSocket(scheme + "//" + location.host + base + "/session");
+    channel.addEventListener("message", (event) => {
+      let msg = {};
+      try { msg = JSON.parse(event.data); } catch (e) { return; }
+      if (msg.renew) channel.send(JSON.stringify({ type: "renew" }));
+      if (!msg.state) return;
+      if (msg.state === "connected") reconnects = 1;
+      if (msg.state === "ended") {
+        over = true;
+        if (msg.reason === "lease_expired" && reconnect()) return;
+      }
+      update(msg);
+    });
+    channel.addEventListener("close", () => {
+      if (over || leaving) return;
+      if (!reconnect()) update({ state: "ended" });
+    });
+  }
+
+  function reconnect() {
+    if (reconnects < 1) return false;
+    reconnects -= 1;
+    update({ state: "reconnecting" });
+    fetch(base + "/remote", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", "X-Portal-Action": "1" },
+      body: "{}",
+    })
+      .then((resp) => { if (resp.ok) follow(); else update({ state: "ended" }); })
+      .catch(() => update({ state: "ended" }));
+    return true;
+  }
+
+  follow();
 })();

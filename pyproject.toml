@@ -46,6 +46,7 @@ dev = [
     "playwright>=1.60,<1.61",
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "pytest-timeout>=2.3",
     "python-multipart>=0.0.32",
     "ruff>=0.6",
     "testcontainers[postgres]>=4.8",
@@ -59,6 +60,10 @@ testpaths = ["tests", "protocol/tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 asyncio_default_test_loop_scope = "function"
+# A hung test fails after this long (seconds), with its stack, instead of
+# stalling the run until CI gives up. The slowest tests take well under a
+# minute even on CI; a per-test limit, so it doesn't grow with the suite.
+timeout = 300
 
 [tool.ruff]
 line-length = 88

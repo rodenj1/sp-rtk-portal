@@ -12,8 +12,23 @@ from collections.abc import Callable
 
 import pytest
 
-from sp_rtk_portal_protocol import tunnel
-from sp_rtk_portal_protocol.tunnel import Frame, FrameError, Kind, Stream, Tunnel
+from sp_rtk_portal_protocol import (
+    AgentConfig,
+    Message,
+    MessageError,
+    TunnelUpdate,
+    control_message,
+    read_control,
+    tunnel,
+)
+from sp_rtk_portal_protocol.tunnel import (
+    Frame,
+    FrameError,
+    Kind,
+    Stream,
+    Tunnel,
+    read_control_frame,
+)
 
 # --- Framing ---------------------------------------------------------------
 
@@ -28,6 +43,7 @@ from sp_rtk_portal_protocol.tunnel import Frame, FrameError, Kind, Stream, Tunne
         Frame(Kind.PONG, 0, b"t=1"),
         Frame(Kind.PAUSE, 2),
         Frame(Kind.RESUME, 2),
+        Frame(Kind.CONTROL, 0, b'{"type":"check_in"}'),
     ],
 )
 def test_every_frame_kind_round_trips(frame: Frame):
@@ -58,6 +74,8 @@ def test_the_layout_is_one_type_byte_then_a_big_endian_stream_id():
         (b"\x02\x00\x00\x00\x01", "empty data frame"),
         (b"\x02\x00\x00\x00\x01" + b"x" * (tunnel.MAX_DATA + 1), "oversized data"),
         (b"\x04\x00\x00\x00\x00" + b"x" * 200, "oversized ping"),
+        (b"\x08\x00\x00\x00\x01{}", "control message on a stream"),
+        (b"\x08\x00\x00\x00\x00", "empty control message"),
     ],
 )
 def test_a_malformed_or_unknown_frame_is_refused(raw: bytes, why: str):
@@ -203,6 +221,38 @@ async def test_a_ping_is_answered_with_a_pong_carrying_its_payload():
     await pair.portal.ping(b"42")
 
     assert tunnel.decode(pair.agent_to_portal[-1]) == Frame(Kind.PONG, 0, b"42")
+
+
+async def test_control_messages_reach_the_other_end_in_order():
+    pair = Pair(echo_upper, window=tunnel.DEFAULT_WINDOW)
+    heard: list[Message | None] = []
+
+    async def on_control(payload: bytes) -> None:
+        heard.append(read_control(payload))
+
+    pair.agent._on_control = on_control
+    update = TunnelUpdate(config=AgentConfig(revision=3))
+    await pair.portal.send_control(control_message(update))
+    await pair.portal.send_control(b'{"type":"from_a_newer_portal"}')
+
+    assert heard == [update, None]  # an unknown type is ignored
+
+
+def test_a_control_message_must_be_a_typed_json_object():
+    for payload in (b"not json", b"[]", b'{"no": "type"}'):
+        with pytest.raises(MessageError):
+            read_control(payload)
+    with pytest.raises(TypeError):
+        control_message(AgentConfig(revision=1))
+
+
+def test_a_malformed_control_frame_closes_the_tunnel():
+    update = TunnelUpdate(config=AgentConfig(revision=3))
+    assert read_control_frame(control_message(update)) == update
+    assert read_control_frame(b'{"type":"from_a_newer_portal"}') is None
+    for payload in (b"not json", b'{"type":"update"}'):
+        with pytest.raises(FrameError):
+            read_control_frame(payload)
 
 
 async def test_closing_the_tunnel_ends_every_stream():

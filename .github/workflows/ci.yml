@@ -125,6 +125,7 @@ jobs:
           --with .
           --with "pytest>=8.3"
           --with "pytest-asyncio>=0.24"
+          --with "pytest-timeout>=2.3"
           pytest tests
 
   # ------------------------------------------------------------------
@@ -133,8 +134,15 @@ jobs:
   # ------------------------------------------------------------------
   test:
     name: Test (Python 3.12)
-    runs-on: ubuntu-latest
+    # Pinned: ubuntu-latest moved to 26.04, which Playwright 1.60 can't
+    # install browsers on.  Return to ubuntu-latest once Playwright
+    # supports it.
+    runs-on: ubuntu-24.04
     needs: lint
+    # A full run takes about 10 min. pytest-timeout fails a hung test after
+    # 5 min (pyproject.toml); this stops anything else stuck long before
+    # GitHub's 6 h.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: sp-rtk-portal

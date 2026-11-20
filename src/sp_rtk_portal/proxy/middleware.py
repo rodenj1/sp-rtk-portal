@@ -152,21 +152,24 @@ class BaseProxy:
             return
         started = False
 
-        def on_start() -> None:
-            nonlocal started
-            started = True
-
         async def proxied() -> None:
-            await relay.http(
-                stream,
-                scope["method"].encode(),
-                target,
-                scope["headers"],
-                receive,
-                send,
-                self._origin,
-                on_start,
-            )
+            async with self._broker.asking(session) as answered:
+
+                async def on_start() -> None:
+                    nonlocal started
+                    started = True
+                    await answered()
+
+                await relay.http(
+                    stream,
+                    scope["method"].encode(),
+                    target,
+                    scope["headers"],
+                    receive,
+                    send,
+                    self._origin,
+                    on_start,
+                )
 
         try:
             ended = await self._until_ended(session, stream, proxied())
