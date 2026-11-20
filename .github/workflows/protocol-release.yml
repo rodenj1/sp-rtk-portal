@@ -240,6 +240,7 @@ jobs:
           --with .
           --with "pytest>=8.3"
           --with "pytest-asyncio>=0.24"
+          --with "pytest-timeout>=2.3"
           pytest tests
 
   build:
